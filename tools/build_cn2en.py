@@ -60,6 +60,10 @@ def clean(sense):
         g = re.sub(r"\s+that$", '', g)                # think that -> think
         if (len(g.split()) > 3 or len(g) > 24) and ',' in g:
             g = g.split(',')[0].strip()                # Beijing municipality, capital of ... -> Beijing municipality
+        if re.search(r"\bpr\.|\.\.\.|\betc\b|-ing\b|^also\b", g, re.I):
+            continue                           # 读音注释（also pr.）、语法说明（...-ing）
+        if g.lower().startswith('be ') and len(g.split()) >= 2:
+            g = g[3:].strip()                  # be sorry -> sorry, be certain -> certain
         if not g or not LATIN_ONLY.match(g):
             continue
         if len(g.split()) > 3 or len(g) > 24:  # 太长的解释性句子不要
