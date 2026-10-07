@@ -1,0 +1,15 @@
+# squirrel.custom.yaml — 英文注释显示在候选词右侧（方案 A「注释在上方」在 1.1.2 会导致面板错乱，已撤回）
+patch:
+  style/candidate_list_layout: stacked
+  style/candidate_format: "[label]. [candidate] [comment]"
+  # 英文比中文大
+  style/font_point: 16
+  style/comment_font_point: 20
+  # 雾凇自带配色会覆盖 style，这里同步；颜色格式 0xBBGGRR
+  preset_color_schemes/purity_of_form_custom/font_point: 16
+  preset_color_schemes/purity_of_form_custom/comment_font_point: 20
+  preset_color_schemes/purity_of_form_custom/comment_text_color: 0x66D1FF          # 暖黄 #FFD166（深底）
+  preset_color_schemes/purity_of_form_custom/hilited_comment_text_color: 0xC85A00  # 深蓝 #005AC8（高亮浅底）
+  # 中文调灰往后退，让英文更突出
+  preset_color_schemes/purity_of_form_custom/candidate_text_color: 0x9A9A9A          # 次选中文 灰（原 #EEEEEE）
+  preset_color_schemes/purity_of_form_custom/hilited_candidate_text_color: 0x666666  # 首选中文 深灰（原黑色）

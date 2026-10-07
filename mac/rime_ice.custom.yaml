@@ -1,0 +1,10 @@
+# rime_ice.custom.yaml — 雾凇拼音补丁（不改原方案文件）
+patch:
+  # 万象简体语法模型（参数取自 RIME-LMDG 仓库对白霜/雾凇系词库的评测配置）
+  grammar/language: wanxiang-lts-zh-hans
+  grammar/non_collocation_penalty: -4
+  # 键盘邻键纠错（librime 内置）：只纠正按到相邻键的单个字母，纠错候选大幅降权，拼对时不影响
+  translator/enable_correction: true
+  # 中译英：候选旁显示英文释义；首选整句走本机翻译服务
+  engine/filters/+:
+    - lua_filter@*cn2en

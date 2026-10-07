@@ -1,0 +1,4 @@
+# default.custom.yaml — 方案选单只保留雾凇拼音
+patch:
+  schema_list:
+    - schema: rime_ice

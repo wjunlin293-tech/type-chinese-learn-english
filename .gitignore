@@ -1,0 +1,11 @@
+.DS_Store
+# 个人数据：用户词库/打字记录、安装信息，绝不提交
+*.userdb/
+*.userdb.txt
+user.yaml
+installation.yaml
+# 体积大、可重新生成
+build/
+mt/venv/
+mt/model/
+*.gram
