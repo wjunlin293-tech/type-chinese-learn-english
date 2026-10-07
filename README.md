@@ -1,4 +1,6 @@
-# rime-cn2en
+# 打中文，顺便背单词
+
+**type-chinese-learn-english** · 一个 macOS 输入法扩展：每个中文候选词旁边都显示英文。
 
 打中文时，在候选词旁边显示英文，边打字边背单词。基于 macOS 上的 Rime 输入法（鼠须管 + 雾凇拼音），**全部本地运行，不联网上传任何输入内容**。
 
@@ -54,8 +56,8 @@ rsync -a --ignore-existing --exclude .git --exclude .github --exclude others --e
 ### 3. 放入本仓库的配置和词表
 
 ```sh
-git clone https://github.com/wjunlin293-tech/rime-cn2en.git ~/rime-cn2en
-cd ~/rime-cn2en
+git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git ~/type-chinese-learn-english
+cd ~/type-chinese-learn-english
 mkdir -p ~/Library/Rime/lua
 cp mac/default.custom.yaml mac/rime_ice.custom.yaml mac/squirrel.custom.yaml ~/Library/Rime/
 cp mac/lua/cn2en.lua data/cn2en.tsv ~/Library/Rime/lua/
