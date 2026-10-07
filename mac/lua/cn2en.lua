@@ -12,13 +12,14 @@ local mt_cache_size = 0
 local MT_URL = "http://127.0.0.1:18085/t?"
 local MT_TIMEOUT = "0.3"   -- 秒；超时就不显示译文，不卡打字
 local MT_MIN_CHARS = 4     -- 首选候选至少 4 个字才整句翻译
+local MT_MIN_CHARS_PARTICLE = 2  -- 带语气词的短句（你好吗、下雨了）2 个字起就整句翻译
 local MT_MAX_CHARS = 60
 local MAX_WORD = 6         -- 逐词对照时最长匹配 6 个字
 local GLOSS_SEP = " · "
 
 -- 逐词对照时跳过的虚词/语气词
 local SKIP = {}
-for _, c in ipairs({ "的", "了", "吗", "呢", "吧", "啊", "呀", "哦", "嘛", "着", "过", "地", "得", "之" }) do
+for _, c in ipairs({ "的", "了", "吗", "呢", "么", "吧", "啊", "呀", "哦", "嘛", "啦", "着", "过", "地", "得", "之" }) do
   SKIP[c] = true
 end
 
@@ -56,11 +57,15 @@ local function first_gloss(en)
   return (en:match("^([^,]+)") or en)
 end
 
--- 正向最大匹配分词，返回逐词英文与实词个数；匹配不到足够内容时返回 nil
+-- 句末这些语气词表示疑问，逐词对照时在末尾补一个问号
+local QUESTION = { ["吗"] = true, ["呢"] = true, ["么"] = true }
+
+-- 正向最大匹配分词，返回逐词英文与实词个数。
+-- 虚词/语气词跳过；若还有查不到的字且实词不足 2 个，返回 nil（避免只露出半个意思）
 local function gloss(text, d)
   local chars = {}
   for _, cp in utf8.codes(text) do chars[#chars + 1] = utf8.char(cp) end
-  local out, i, n = {}, 1, #chars
+  local out, i, n, unknown, particles = {}, 1, #chars, 0, 0
   while i <= n do
     local hit_len, hit_en = 0, nil
     for len = math.min(MAX_WORD, n - i + 1), 1, -1 do
@@ -75,11 +80,14 @@ local function gloss(text, d)
       out[#out + 1] = first_gloss(hit_en)
       i = i + hit_len
     else
-      i = i + 1   -- 虚词或词表没有的字：跳过
+      if SKIP[chars[i]] then particles = particles + 1 else unknown = unknown + 1 end
+      i = i + 1
     end
   end
-  if #out < 2 then return nil, #out end
-  return table.concat(out, GLOSS_SEP), #out
+  if #out == 0 or (#out < 2 and unknown > 0) then return nil, #out, particles end
+  local g = table.concat(out, GLOSS_SEP)
+  if QUESTION[chars[n]] then g = g .. "?" end
+  return g, #out, particles
 end
 
 -- 一次请求翻译多条，结果写入 mt_cache（失败/超时则什么都不写）
@@ -106,11 +114,12 @@ local function translate_batch(texts)
   end
 end
 
--- 译文是否可信：英文词数不应远多于原文实词数（否则多半是给半句脑补了内容）
-local function mt_plausible(tr, n_words)
+-- 译文是否可信：英文词数不应远多于原文实词数（否则多半是给半句脑补了内容）。
+-- 语气词也带意思（了吗 ≈ have ... yet?），每个放宽 1 个英文词。
+local function mt_plausible(tr, n_words, n_particles)
   local en_words = 0
   for _ in tr:gmatch("%a+") do en_words = en_words + 1 end
-  return en_words <= 2.2 * math.max(n_words, 1) + 1
+  return en_words <= 2.2 * math.max(n_words, 1) + 1 + (n_particles or 0)
 end
 
 local function with_comment(cand, en)
@@ -133,10 +142,11 @@ local function flush(buf, d, first_idx)
     if d[t] then
       notes[k] = d[t]
     elseif is_all_cjk(t) then
-      local g, n_words = gloss(t, d)
+      local g, n_words, n_particles = gloss(t, d)
       local len = utf8.len(t) or 0
-      if first_idx + k - 1 == 1 and len >= MT_MIN_CHARS and len <= MT_MAX_CHARS then
-        notes[k] = { gloss = g, n = n_words }
+      local min_len = (n_particles or 0) > 0 and MT_MIN_CHARS_PARTICLE or MT_MIN_CHARS
+      if first_idx + k - 1 == 1 and len >= min_len and len <= MT_MAX_CHARS then
+        notes[k] = { gloss = g, n = n_words, p = n_particles }
         if mt_cache[t] == nil then todo[#todo + 1] = t end
       else
         notes[k] = g
@@ -148,7 +158,7 @@ local function flush(buf, d, first_idx)
     local note = notes[k]
     if type(note) == "table" then
       local tr = mt_cache[cand.text]
-      if tr and mt_plausible(tr, note.n) then note = tr else note = note.gloss end
+      if tr and mt_plausible(tr, note.n, note.p) then note = tr else note = note.gloss end
     end
     if note then yield(with_comment(cand, note)) else yield(cand) end
   end
