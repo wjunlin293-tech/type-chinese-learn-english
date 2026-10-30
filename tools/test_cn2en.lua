@@ -17,6 +17,7 @@ local flags = {}
 for i = 2, #arg do flags[arg[i]] = true end
 local root = (arg[0]:match("^(.*)/tools/[^/]+$") or ".")
 CN2EN_NO_MT = flags["--no-mt"]
+CN2EN_MT_TIMEOUT = "5"   -- 测的是译文内容，不是速度
 CN2EN_DATA_DIR = root .. "/data"
 rime_api = { get_user_data_dir = function() return root end }
 log = { error = function(m) io.stderr:write(m, "\n") end }
@@ -26,7 +27,10 @@ local out
 function yield(c) out[#out + 1] = c end
 
 local mod = dofile(root .. "/mac/lua/cn2en.lua")
-local env = { engine = { schema = { page_size = 5 } } }
+local options = {}
+local env = { engine = { schema = { page_size = 5 },
+  context = { get_option = function(_, name) return options[name] or false end } } }
+CN2EN_USER_FILE = root .. "/tools/no-such-user-file.tsv"   -- 测试不读个人词表
 mod.init(env)
 
 local check = flags["--check"]

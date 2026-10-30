@@ -9,6 +9,8 @@
 -- 逐词对照用词频做最大概率分词（研究/生命，而不是 研究生/命），
 -- 并处理量词（三本书 → three · book）、宾语代词（帮我 → help · me）等常见搭配。
 -- 词表在模块首次加载时读入一次（require 缓存）；翻译结果在 Lua 侧也有缓存。
+-- 个人词表 ~/Library/Rime/cn2en_user.tsv 优先级最高，更新时不会被覆盖（cn2en fix 命令写的就是它）。
+-- 开关（在方案选单 F4 里，或按快捷键）：cn2en_off 关掉英文；cn2en_no_mt 只查词、不整句翻译。
 
 local dict, freq, senses = nil, nil, nil
 local log_total = 0
@@ -16,13 +18,14 @@ local mt_cache = {}
 local mt_cache_size = 0
 
 local MT_URL = "http://127.0.0.1:18085/t?s=1&"
-local MT_TIMEOUT = "0.3"   -- 秒；超时就不显示译文，不卡打字
+local MT_TIMEOUT = CN2EN_MT_TIMEOUT or "0.3"   -- 秒；超时就不显示译文，不卡打字（测试脚本会放宽）
 local MT_MIN_CHARS = 4     -- 首选候选至少 4 个字才整句翻译
 local MT_MIN_CHARS_PARTICLE = 2  -- 带语气词的短句（你好吗、下雨了）2 个字起就整句翻译
 local MT_MAX_CHARS = 60
 local MT_MIN_COVERAGE = 0.4      -- 原文实词在译文里找得到对应英文的比例，低于此值判为错译
 local MT_MIN_SCORE = -1.5        -- 模型对译文的平均对数概率，低于此值说明模型自己也没把握
 local MAX_WORD = 6         -- 逐词对照时最长匹配 6 个字
+local USER_FREQ = 300      -- 个人词表里多字词的词频
 local GLOSS_SEP = " · "
 
 local function set_of(list)
@@ -103,6 +106,21 @@ local function load_dict()
   end)
   log_total = math.log(math.max(total, 1))
   read_tsv("cn2en_senses.tsv", function(k, v) senses[k] = v end)
+  -- 个人词表：覆盖同名词条；新加的多字词给一个中等词频，分词时不被拆开
+  local user = CN2EN_USER_FILE or (rime_api.get_user_data_dir() .. "/cn2en_user.tsv")
+  local f = io.open(user, "r")
+  if f then
+    for line in f:lines() do
+      local k, v = line:match("^([^\t#][^\t]*)\t%s*(.-)%s*$")
+      if k and v == "-" then
+        dict[k] = nil
+      elseif k and v ~= "" then
+        dict[k] = v
+        if (utf8.len(k) or 0) > 1 then freq[k] = math.max(freq[k] or 0, USER_FREQ) end
+      end
+    end
+    f:close()
+  end
   return dict
 end
 
@@ -387,7 +405,7 @@ local function init(env)
 end
 
 -- buf: 本批候选；first_idx: 本批第一个候选在整个菜单里的序号
-local function flush(buf, d, first_idx)
+local function flush(buf, d, first_idx, use_mt)
   local notes, todo = {}, {}
   for k, cand in ipairs(buf) do
     local t = cand.text
@@ -397,7 +415,7 @@ local function flush(buf, d, first_idx)
       local g, n_words, n_particles, toks = gloss(t, d)
       local len = utf8.len(t) or 0
       local min_len = (n_particles or 0) > 0 and MT_MIN_CHARS_PARTICLE or MT_MIN_CHARS
-      if first_idx + k - 1 == 1 and len >= min_len and len <= MT_MAX_CHARS then
+      if use_mt and first_idx + k - 1 == 1 and len >= min_len and len <= MT_MAX_CHARS then
         notes[k] = { gloss = g, n = n_words, p = n_particles, toks = toks }
         if mt_cache[t] == nil then todo[#todo + 1] = t end
       else
@@ -417,18 +435,24 @@ local function flush(buf, d, first_idx)
 end
 
 local function filter(input, env)
+  local ctx = env.engine.context
+  if ctx:get_option("cn2en_off") then        -- 「纯中」：原样放行
+    for cand in input:iter() do yield(cand) end
+    return
+  end
+  local use_mt = not ctx:get_option("cn2en_no_mt")
   local d = dict or load_dict()
   local chunk = env.chunk or 6
   local buf, idx = {}, 1
   for cand in input:iter() do
     buf[#buf + 1] = cand
     if #buf >= chunk then
-      flush(buf, d, idx)
+      flush(buf, d, idx, use_mt)
       idx = idx + #buf
       buf = {}
     end
   end
-  flush(buf, d, idx)
+  flush(buf, d, idx, use_mt)
 end
 
 -- 末尾的 _test 只给 tools/test_cn2en.lua 用，Rime 只认 init / func
