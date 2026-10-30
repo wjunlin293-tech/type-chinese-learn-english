@@ -166,7 +166,7 @@ install_conf() {
       cp "$src" "$dst"
     else
       cp "$src" "$dst.new"
-      warn "你改过 $name，保留了你的版本；新版本放在 $name.new"
+      warn "你改过 ${name}，保留了你的版本；新版本放在 $name.new"
     fi
   elif is_legacy_conf "$dst" "$name"; then
     cp "$src" "$dst"   # 旧版原样的配置，没改过，直接换新
@@ -177,7 +177,7 @@ install_conf() {
     # 第一次用新安装程序、文件是你改过的旧版配置（比如改了颜色）：原样保留
     if ! is_legacy_conf "$src" "$name"; then
       cp "$src" "$dst.new"
-      info "你改过 $name，保留了你的版本；新版本放在 $name.new，需要的话对照着合并"
+      info "你改过 ${name}，保留了你的版本；新版本放在 $name.new，需要的话对照着合并"
     fi
   fi
   cp "$src" "$pristine"
@@ -269,7 +269,7 @@ install_squirrel() {
     REASON="安装输入法需要管理员账户，请用管理员账户登录后再运行"; return 1
   fi
   local tmp; tmp=$(mktemp -d)
-  info "下载鼠须管 $SQUIRREL_VERSION（约 25MB）…"
+  info "下载鼠须管 ${SQUIRREL_VERSION}（约 25MB）…"
   fetch "$SQUIRREL_PKG_URL" "$tmp/Squirrel.pkg" bar || { REASON="下载鼠须管失败（网络问题？），重新运行即可"; rm -rf "$tmp"; return 1; }
   if [ "$(sha256 "$tmp/Squirrel.pkg")" != "$SQUIRREL_PKG_SHA256" ]; then
     REASON="鼠须管安装包校验不通过（下载不完整），请重新运行"; rm -rf "$tmp"; return 1
@@ -366,7 +366,7 @@ cmd_install() {
     from_version=1.0.0                                # v1.0 手动装的
   fi
   [ "$from_version" = "$VERSION" ] && from_version=
-  log "===== cn2en $mode v$VERSION（来自 $APP）"
+  log "===== cn2en $mode v${VERSION}（来自 ${APP}）"
 
   if [ -n "$from_version" ]; then
     printf '%s更新「打中文，顺便背单词」v%s → v%s%s\n' "$B" "$from_version" "$VERSION" "$N"
@@ -380,7 +380,7 @@ cmd_install() {
   [ "$(uname)" = Darwin ] || [ -n "${CN2EN_ALLOW_NON_MAC:-}" ] || die "目前只支持 macOS"
   mv=$(macos_version)
   if [ "${mv%%.*}" -lt "$MIN_MACOS" ] 2>/dev/null && [ ! -d "$SQUIRREL_APP" ]; then
-    die "鼠须管需要 macOS $MIN_MACOS（Ventura）或更新，这台电脑是 macOS $mv" "可以在「系统设置 → 通用 → 软件更新」里升级后再装。"
+    die "鼠须管需要 macOS ${MIN_MACOS}（Ventura）或更新，这台电脑是 macOS $mv" "可以在「系统设置 → 通用 → 软件更新」里升级后再装。"
   fi
   ok "macOS $mv"
   free=$(free_mb); free=${free:-99999}
@@ -517,7 +517,7 @@ cmd_update() {
     ok "已经是最新版 v$latest"
     return 0
   fi
-  info "v$old → v$latest，下载中…"
+  info "v$old → v${latest}，下载中…"
   tmp=$(mktemp -d)
   fetch "$APP_TARBALL_URL" "$tmp/app.tar.gz" || { rm -rf "$tmp"; die "下载新版本失败" "检查网络后重试。"; }
   mkdir -p "$tmp/x"
@@ -572,7 +572,7 @@ cmd_status() {
   if [ ! -f "$RIME/mt/model/model.bin" ]; then
     info "没装（可选）：运行 cn2en install 补装"
   elif out=$(mt_running); then
-    ok "运行中：你好 → ${out%%$'\t'*}"
+    ok "运行中：你好 → $(printf '%s' "$out" | cut -f1)"
   elif [ "$(get_choice mt)" = off ]; then
     info "已关闭（cn2en mt on 打开）"
   else
@@ -582,7 +582,7 @@ cmd_status() {
   step "版本"
   latest=$(curl -fsSL --max-time 10 "$VERSION_URL" 2>/dev/null | tr -d ' \n')
   if [ -z "$latest" ]; then info "连不上 GitHub，跳过新版本检查"
-  elif [ "$latest" != "$VERSION" ]; then warn "有新版本 v$latest：运行 cn2en update"
+  elif [ "$latest" != "$VERSION" ]; then warn "有新版本 v${latest}：运行 cn2en update"
   else ok "已是最新版 v$VERSION"; fi
 
   echo
@@ -603,12 +603,12 @@ cmd_fix() {
   case $word in *$'\t'*|'#'*) die "词里不能有 Tab，也不能以 # 开头" ;; esac
   awk -F'\t' -v w="$word" '$1 != w' "$USER_DICT" > "$USER_DICT.tmp" && mv "$USER_DICT.tmp" "$USER_DICT"
   if [ "$undo" = 1 ]; then
-    ok "已撤销「$word」的个人修正，恢复词表原来的英文"
+    ok "已撤销「${word}」的个人修正，恢复词表原来的英文"
   else
     printf '%s\t%s\n' "$word" "$en" >> "$USER_DICT"
-    if [ "$en" = - ]; then ok "「$word」不再显示英文"; else ok "「$word」→ $en"; fi
+    if [ "$en" = - ]; then ok "「${word}」不再显示英文"; else ok "「${word}」→ $en"; fi
     orig=$(awk -F'\t' -v w="$word" '$1 == w { print $2; exit }' "$RIME/lua/cn2en.tsv" 2>/dev/null)
-    [ -n "$orig" ] && info "原来是：$orig（撤销：cn2en fix --undo $word）"
+    [ -n "$orig" ] && info "原来是：${orig}（撤销：cn2en fix --undo ${word}）"
   fi
   reload_rime
   [ "$undo" = 1 ] || info "觉得这个修正对大家都有用？欢迎反馈：$GH/issues"
@@ -619,7 +619,7 @@ cmd_fixes() {
     info "个人词表是空的。用 cn2en fix 中文 英文 添加"; return 0
   fi
   grep $'^[^#].*\t' "$USER_DICT" | awk -F'\t' '{ printf "  %s → %s\n", $1, $2 }'
-  info "文件：$USER_DICT（也可以直接编辑，改完运行 cn2en reload）"
+  info "文件：${USER_DICT}（也可以直接编辑，改完运行 cn2en reload）"
 }
 
 # ---------- mt ----------
@@ -661,8 +661,8 @@ cmd_uninstall() {
     # shellcheck disable=SC2024  # 日志由普通用户写
     sudo rm -rf "$SQUIRREL_APP" && { sudo pkgutil --forget im.rime.inputmethod.Squirrel >> "$LOG" 2>&1 || true; }
     rm -rf "$RIME"
-    ok "已删除鼠须管和 $RIME（输入法菜单里的图标注销一次后消失）"
-    [ -n "$backup" ] && [ -d "$backup" ] && info "安装前的备份还在：$backup（mv \"$backup\" \"$RIME\" 可恢复；备份里不含语法模型，需要的话重新运行安装命令补回）"
+    ok "已删除鼠须管和 ${RIME}（输入法菜单里的图标注销一次后消失）"
+    [ -n "$backup" ] && [ -d "$backup" ] && info "安装前的备份还在：${backup}（mv \"$backup\" \"$RIME\" 可恢复；备份里不含语法模型，需要的话重新运行安装命令补回）"
   else
     reload_rime
   fi
