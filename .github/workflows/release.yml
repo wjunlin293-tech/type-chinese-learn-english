@@ -1,0 +1,34 @@
+# VERSION 改动合并到 main 后，自动发布 Release vX.Y.Z，说明取自 CHANGELOG.md 里对应的那一节。
+# 已经发布过的版本不会重复发布。用户安装/更新都从 main 下载，Release 用来记录每个版本改了什么。
+name: 发布新版本
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [VERSION]
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(tr -d ' \n' < VERSION)
+          if gh release view "v$v" > /dev/null 2>&1; then echo "v$v 已发布"; exit 0; fi
+          # CHANGELOG 里从「## vX.Y.Z — 标题」到下一个「## v」之间的内容
+          awk -v v="$v" '/^## v/ { if (on) exit; if ($2 == "v" v) { on = 1; sub(/^## /, ""); title = $0; next } } on' CHANGELOG.md > notes.md
+          title=$(grep -m1 "^## v$v" CHANGELOG.md | sed 's/^## //')
+          {
+            echo '**安装或更新**：打开「终端」，粘贴下面这一行，回车（已经装过的话就是更新）'
+            echo
+            echo '```bash'
+            echo '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/wjunlin293-tech/type-chinese-learn-english/main/install.sh)"'
+            echo '```'
+            echo
+            cat notes.md
+          } > body.md
+          gh release create "v$v" --target "$GITHUB_SHA" --title "${title:-v$v}" --notes-file body.md --latest
