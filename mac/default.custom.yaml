@@ -2,3 +2,7 @@
 patch:
   schema_list:
     - schema: rime_ice
+  # 在方案选单里切换的英文开关，下次打字时仍保持
+  switcher/save_options/+:
+    - cn2en_off
+    - cn2en_no_mt

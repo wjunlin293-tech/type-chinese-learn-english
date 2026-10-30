@@ -1,0 +1,643 @@
+#!/usr/bin/env bash
+# cn2en — 「打中文，顺便背单词」的安装 / 更新 / 管理命令。
+# 兼容 macOS 自带的 bash 3.2。运行 `cn2en help` 查看用法。
+# 设计目标：一行命令装好、不问问题；不依赖 Homebrew 和 git；可选部分失败不影响主体；
+# 出错时说清楚原因，细节都写进日志。
+set -uo pipefail
+
+# ---------- 路径与下载地址（CN2EN_* 环境变量只用于测试） ----------
+resolve() {   # macOS 旧版 readlink 没有 -f
+  local p=$1 t
+  while [ -L "$p" ]; do
+    t=$(readlink "$p")
+    case $t in /*) p=$t ;; *) p=$(dirname "$p")/$t ;; esac
+  done
+  (cd "$(dirname "$p")" && echo "$(pwd -P)/$(basename "$p")")
+}
+APP=$(dirname "$(dirname "$(resolve "$0")")")          # 本工具的文件（脚本、词表、配置）
+APP_HOME=${CN2EN_APP_DIR:-"$HOME/Library/Application Support/cn2en"}   # 一键安装放这里
+RIME=${CN2EN_RIME_DIR:-$HOME/Library/Rime}
+STATE=$RIME/cn2en                                     # 安装记录：版本、你的选择、上次装的配置原件
+SQUIRREL_APP=${CN2EN_SQUIRREL_APP:-"/Library/Input Methods/Squirrel.app"}
+AGENTS=${CN2EN_AGENTS_DIR:-$HOME/Library/LaunchAgents}
+LOG=${CN2EN_LOG:-$HOME/Library/Logs/cn2en.log}
+PLIST=$AGENTS/local.cn2en-mt.plist
+SERVICE=local.cn2en-mt
+MT_URL=http://127.0.0.1:18085/t
+USER_DICT=$RIME/cn2en_user.tsv
+GRAM=wanxiang-lts-zh-hans.gram
+DATA_FILES="cn2en.lua cn2en.tsv cn2en_freq.tsv"
+VERSION=$(cat "$APP/VERSION" 2>/dev/null || echo "?")
+
+GH=https://github.com/wjunlin293-tech/type-chinese-learn-english
+APP_TARBALL_URL=${CN2EN_APP_TARBALL_URL:-$GH/archive/refs/heads/main.tar.gz}
+VERSION_URL=${CN2EN_VERSION_URL:-https://raw.githubusercontent.com/wjunlin293-tech/type-chinese-learn-english/main/VERSION}
+MODEL_URL=${CN2EN_MODEL_URL:-$GH/releases/download/model-v1/opus-mt-zh-en-ct2-int8.tar.gz}
+SQUIRREL_VERSION=1.1.2
+SQUIRREL_PKG_URL=${CN2EN_SQUIRREL_PKG_URL:-https://github.com/rime/squirrel/releases/download/$SQUIRREL_VERSION/Squirrel-$SQUIRREL_VERSION.pkg}
+SQUIRREL_PKG_SHA256=${CN2EN_SQUIRREL_PKG_SHA256:-614746013212937623d5bbab9901e9c43d1ec937aa32307d6b6092a05e308287}
+RIME_ICE_TAG=2026.06.30
+RIME_ICE_URL=${CN2EN_RIME_ICE_URL:-https://github.com/iDvel/rime-ice/archive/refs/tags/$RIME_ICE_TAG.tar.gz}
+GRAM_URL=${CN2EN_GRAM_URL:-https://github.com/amzxyz/RIME-LMDG/releases/download/LTS/$GRAM}
+MIN_MACOS=13          # 鼠须管 1.x 的最低要求
+NEED_MB_CORE=600      # 鼠须管 + 雾凇 + 插件
+NEED_MB_FULL=2500     # 再加语法模型、翻译服务（含 Python 环境）
+
+# ---------- 输出 ----------
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  B=$'\033[1m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; D=$'\033[2m'; N=$'\033[0m'
+else
+  B=''; G=''; Y=''; R=''; D=''; N=''
+fi
+log()  { mkdir -p "$(dirname "$LOG")"; printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+step() { printf '\n%s%s%s\n' "$B" "$*" "$N"; log "== $*"; }
+ok()   { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '  %s!%s %s\n' "$Y" "$N" "$*"; log "警告：$*"; }
+bad()  { printf '  %s✗%s %s\n' "$R" "$N" "$*"; log "错误：$*"; }
+info() { printf '    %s%s%s\n' "$D" "$*" "$N"; }
+die() {
+  printf '\n%s没能完成：%s%s\n' "$R" "$1" "$N" >&2
+  [ -n "${2:-}" ] && printf '%s\n' "$2" >&2
+  log "失败：$1"
+  printf '\n%s详细日志：%s（遇到问题可以把它发到 %s/issues）%s\n' "$D" "$LOG" "$GH" "$N" >&2
+  exit 1
+}
+
+# run 命令…：输出写进日志，屏幕上只看结果；失败时显示日志最后几行
+run() {
+  log "\$ $*"
+  "$@" >> "$LOG" 2>&1 && return 0
+  local rc=$?
+  printf '%s' "$D"; tail -n 5 "$LOG" | sed 's/^/      /'; printf '%s' "$N"
+  return $rc
+}
+
+# fetch URL 文件 [bar]：自动重试、断点续传；bar 表示显示进度条（大文件用）
+fetch() {
+  local url=$1 out=$2 bar=${3:-}
+  local opts=(-fL --retry 3 --retry-delay 2 --connect-timeout 20 -C - -o "$out.part")
+  log "下载 $url"
+  if [ -n "$bar" ] && [ -t 2 ]; then opts+=(--progress-bar); else opts+=(-sS); fi
+  if curl "${opts[@]}" "$url" 2>>"$LOG" || curl "${opts[@]}" "$url" 2>>"$LOG"; then
+    mv "$out.part" "$out"
+  else
+    rm -f "$out.part"; return 1
+  fi
+}
+
+sha256() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1"; else sha256sum "$1"; fi | awk '{print $1}'; }
+
+ask() {   # 只在卸载等危险操作时用；curl | bash 时 stdin 是脚本，从 /dev/tty 读
+  local q=$1 def=$2 hint ans=''
+  if [ "$def" = Y ]; then hint="[Y/n]"; else hint="[y/N]"; fi
+  if { exec 3</dev/tty; } 2>/dev/null; then
+    printf '  %s %s ' "$q" "$hint"; read -r ans <&3 || ans=''; exec 3<&-
+  fi
+  case ${ans:-$def} in [Yy]*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---------- 安装记录 ----------
+get_choice() { sed -n "s/^$1=//p" "$STATE/choices" 2>/dev/null | tail -1; }
+set_choice() {
+  mkdir -p "$STATE"
+  { grep -v "^$1=" "$STATE/choices" 2>/dev/null || true; echo "$1=$2"; } > "$STATE/choices.tmp"
+  mv "$STATE/choices.tmp" "$STATE/choices"
+}
+
+# 装一个配置文件：你没改过（和上次装的原件一样）就直接换新；改过就保留你的，新版另存为 .new
+install_conf() {
+  local src=$1 name dst pristine
+  name=$(basename "$src"); dst=$RIME/$name; pristine=$STATE/pristine/$name
+  mkdir -p "$STATE/pristine"
+  if [ ! -f "$dst" ] || cmp -s "$dst" "$src"; then
+    cp "$src" "$dst"
+  elif [ -f "$pristine" ] && cmp -s "$src" "$pristine"; then
+    :   # 新版没改这个文件，你的修改原样保留
+  elif [ -f "$pristine" ] && cmp -s "$dst" "$pristine"; then
+    cp "$src" "$dst"
+  elif [ ! -f "$pristine" ]; then
+    cp "$dst" "$dst.bak-$(date +%Y%m%d-%H%M%S)"; cp "$src" "$dst"
+    info "原有的 $name 已备份为 $name.bak-*"
+  else
+    cp "$src" "$dst.new"
+    warn "你改过 $name，保留了你的版本；新版本放在 $name.new"
+  fi
+  cp "$src" "$pristine"
+}
+
+squirrel_bin() { echo "$SQUIRREL_APP/Contents/MacOS/Squirrel"; }
+squirrel_enabled() { defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -qi 'rime\|squirrel'; }
+
+reload_rime() {
+  if [ -x "$(squirrel_bin)" ]; then
+    "$(squirrel_bin)" --reload >> "$LOG" 2>&1 || true
+    ok "已重新部署输入法（几秒后生效）"
+  fi
+}
+
+mt_running() { curl -s --fail --noproxy '*' -m 3 "$MT_URL?q=%E4%BD%A0%E5%A5%BD" 2>/dev/null; }
+
+mt_start() {
+  mkdir -p "$AGENTS"
+  sed "s#__HOME__#$HOME#g; s#$HOME/Library/Rime#$RIME#g" "$APP/mac/mt/local.cn2en-mt.plist.template" > "$PLIST"
+  launchctl bootout "gui/$(id -u)/$SERVICE" >> "$LOG" 2>&1 || true
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" >> "$LOG" 2>&1 || true
+  local _
+  for _ in $(seq 1 30); do
+    mt_running >/dev/null && return 0
+    sleep 1
+  done
+  return 1
+}
+
+mt_stop() {
+  launchctl bootout "gui/$(id -u)/$SERVICE" >> "$LOG" 2>&1 || true
+  rm -f "$PLIST"
+}
+
+# 找一个能用的 python3（3.9+）。只在装了命令行工具时才碰 /usr/bin/python3，否则它会弹窗
+find_python() {
+  local p
+  for p in ${CN2EN_PYTHON:-} /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    [ -x "$p" ] || continue
+    if [ "$p" = /usr/bin/python3 ] && [ "$(uname)" = Darwin ] && ! xcode-select -p >/dev/null 2>&1; then continue; fi
+    "$p" -c 'import sys, venv; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1 && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+# 没有 Python：请系统装「命令行开发者工具」（弹窗里点「安装」），装好自动继续，最多等 30 分钟
+get_python() {
+  local py waited=0
+  py=$(find_python) && { echo "$py"; return 0; }
+  [ "$(uname)" = Darwin ] || return 1
+  info "整句翻译需要苹果的「命令行开发者工具」。马上会弹出系统窗口，点「安装」即可（约 5–10 分钟），装好后自动继续。" >&2
+  info "不想装就点「取消」，只跳过整句翻译，其余功能不受影响。" >&2
+  xcode-select --install >> "$LOG" 2>&1 || true
+  sleep 5
+  while [ $waited -lt 1800 ]; do
+    py=$(find_python) && { echo "$py"; return 0; }
+    if ! pgrep -f "Install Command Line Developer Tools" >/dev/null 2>&1; then   # 窗口关了：取消或失败
+      sleep 5; py=$(find_python) && { echo "$py"; return 0; }
+      return 1
+    fi
+    sleep 10; waited=$((waited + 10))
+  done
+  return 1
+}
+
+# ---------- 安装的各个部分（失败时把原因写进 REASON 并返回 1） ----------
+REASON=''
+
+install_rime_ice() {
+  local tmp src e
+  tmp=$(mktemp -d)
+  fetch "$RIME_ICE_URL" "$tmp/rime-ice.tar.gz" || { REASON="下载雾凇拼音失败（网络问题？）"; rm -rf "$tmp"; return 1; }
+  mkdir -p "$tmp/x"
+  if ! run tar -xzf "$tmp/rime-ice.tar.gz" -C "$tmp/x"; then REASON="雾凇拼音压缩包损坏，请重试"; rm -rf "$tmp"; return 1; fi
+  src=$(find "$tmp/x" -maxdepth 2 -name rime_ice.schema.yaml -exec dirname {} \; | head -1)
+  [ -n "$src" ] || { REASON="雾凇拼音压缩包里没有 rime_ice.schema.yaml"; rm -rf "$tmp"; return 1; }
+  mkdir -p "$RIME"
+  for e in "$src"/* "$src"/.[!.]*; do
+    [ -e "$e" ] || continue
+    case $(basename "$e") in .git|.github|others|build) continue ;; esac
+    cp -Rn "$e" "$RIME/" >> "$LOG" 2>&1 || true   # -n：你已有的同名文件不覆盖
+  done
+  rm -rf "$tmp"
+}
+
+install_squirrel() {
+  if [ -z "${CN2EN_SKIP_ADMIN_CHECK:-}" ] && ! id -Gn | grep -qw admin; then
+    REASON="安装输入法需要管理员账户，请用管理员账户登录后再运行"; return 1
+  fi
+  local tmp; tmp=$(mktemp -d)
+  info "下载鼠须管 $SQUIRREL_VERSION（约 25MB）…"
+  fetch "$SQUIRREL_PKG_URL" "$tmp/Squirrel.pkg" bar || { REASON="下载鼠须管失败（网络问题？），重新运行即可"; rm -rf "$tmp"; return 1; }
+  if [ "$(sha256 "$tmp/Squirrel.pkg")" != "$SQUIRREL_PKG_SHA256" ]; then
+    REASON="鼠须管安装包校验不通过（下载不完整），请重新运行"; rm -rf "$tmp"; return 1
+  fi
+  info "安装输入法需要输入开机密码（输入时屏幕上不显示，输完按回车）"
+  log "\$ sudo installer -pkg Squirrel.pkg -target /"
+  # shellcheck disable=SC2024  # 日志由普通用户写，本来就不需要 sudo
+  if ! sudo installer -pkg "$tmp/Squirrel.pkg" -target / >> "$LOG" 2>&1; then
+    REASON="鼠须管安装失败（密码不对，或系统拒绝了安装）"; rm -rf "$tmp"; return 1
+  fi
+  rm -rf "$tmp"
+}
+
+install_grammar() {
+  info "下载万象语法模型（约 400MB，网速慢的话要几分钟）…"
+  fetch "$GRAM_URL" "$RIME/$GRAM" bar || { REASON="下载失败（网络问题？），以后运行 cn2en install 会接着下"; return 1; }
+  # 下载到的是网页而不是模型，说明链接失效了
+  if [ "$(wc -c < "$RIME/$GRAM")" -lt 1000000 ]; then
+    rm -f "$RIME/$GRAM"; REASON="下载到的文件不对，语法模型的链接可能变了"; return 1
+  fi
+}
+
+install_mt() {
+  local py tmp
+  py=$(get_python) || { REASON="没有可用的 Python 3.9+（需要苹果的命令行开发者工具）"; return 1; }
+  mkdir -p "$RIME/mt"
+  cp "$APP/mac/mt/server.py" "$RIME/mt/"
+  if [ ! -x "$RIME/mt/venv/bin/python" ]; then
+    run "$py" -m venv "$RIME/mt/venv" || { REASON="创建 Python 环境失败"; return 1; }
+  fi
+  info "安装翻译引擎（约 50MB）…"
+  run "$RIME/mt/venv/bin/python" -m pip install -q --upgrade pip
+  run "$RIME/mt/venv/bin/python" -m pip install -q --upgrade ctranslate2 sentencepiece ||
+    run "$RIME/mt/venv/bin/python" -m pip install -q --upgrade ctranslate2 sentencepiece ||
+    { REASON="安装翻译引擎失败（网络问题？）"; return 1; }
+  if [ ! -f "$RIME/mt/model/model.bin" ]; then
+    tmp=$(mktemp -d)
+    info "下载翻译模型（约 70MB）…"
+    if fetch "$MODEL_URL" "$tmp/model.tar.gz" bar && fetch "$MODEL_URL.sha256" "$tmp/model.sha256" &&
+       [ "$(sha256 "$tmp/model.tar.gz")" = "$(tr -d ' \n' < "$tmp/model.sha256")" ] &&
+       run tar -xzf "$tmp/model.tar.gz" -C "$RIME/mt"; then
+      :
+    else
+      warn "现成的模型下载不了，改为在本机转换（临时下载约 1GB，要几分钟）"
+      run "$APP/tools/convert_model.sh" "$RIME/mt/model" || { rm -rf "$tmp"; REASON="模型转换失败"; return 1; }
+    fi
+    rm -rf "$tmp"
+  fi
+  [ -f "$RIME/mt/model/model.bin" ] || { REASON="模型文件不完整，重新运行 cn2en install"; return 1; }
+  mt_start || { REASON="翻译服务启动后没有响应，看 $RIME/mt/server.err.log"; return 1; }
+}
+
+link_command() {
+  local dir='' d rc
+  if [ -n "${CN2EN_BIN_DIR:-}" ]; then dir=$CN2EN_BIN_DIR
+  else
+    for d in /opt/homebrew/bin /usr/local/bin; do
+      case ":$PATH:" in *":$d:"*) if [ -w "$d" ]; then dir=$d; break; fi ;; esac
+    done
+  fi
+  if [ -z "$dir" ]; then
+    dir=$HOME/.local/bin; rc=$HOME/.zprofile
+    # shellcheck disable=SC2016
+    grep -qs '.local/bin' "$rc" || printf '\n# cn2en\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+  fi
+  mkdir -p "$dir"
+  ln -sf "$APP/bin/cn2en" "$dir/cn2en"
+  log "命令链接：$dir/cn2en -> $APP/bin/cn2en"
+}
+
+macos_version() { echo "${CN2EN_MACOS_VERSION:-$(sw_vers -productVersion 2>/dev/null || echo 0)}"; }
+free_mb() { df -Pk "$HOME" 2>/dev/null | awk 'NR == 2 { print int($4 / 1024) }'; }
+
+# ---------- install / update ----------
+cmd_install() {
+  local mode=install from_version='' want_mt=yes want_gram=yes
+  local mv free bak tmpc f result_gram result_mt
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --no-mt) want_mt=no ;;
+      --no-grammar) want_gram=no ;;
+      -y|--yes) ;;   # 兼容：现在本来就不问问题
+      --update-from) mode=update; from_version=${2:-}; shift ;;
+      *) die "不认识的参数 $1" "运行 cn2en help 查看用法" ;;
+    esac
+    shift
+  done
+  if [ "$mode" = update ]; then   # 更新时沿用上次「不要」的选择
+    [ "$(get_choice grammar)" = no ] && want_gram=no
+    [ "$(get_choice mt)" = no ] && want_mt=no
+  fi
+  log "===== cn2en $mode v$VERSION（来自 $APP）"
+
+  if [ "$mode" = update ]; then
+    printf '%s更新「打中文，顺便背单词」到 v%s%s\n' "$B" "$VERSION" "$N"
+  else
+    printf '%s安装「打中文，顺便背单词」v%s%s  %s全程自动，大约 5–10 分钟%s\n' "$B" "$VERSION" "$N" "$D" "$N"
+  fi
+
+  # ---- 检查 ----
+  step "检查电脑环境"
+  [ "$(id -u)" != 0 ] || die "请不要用 sudo 运行" "直接粘贴安装命令即可，需要密码时会单独问你。"
+  [ "$(uname)" = Darwin ] || [ -n "${CN2EN_ALLOW_NON_MAC:-}" ] || die "目前只支持 macOS"
+  mv=$(macos_version)
+  if [ "${mv%%.*}" -lt "$MIN_MACOS" ] 2>/dev/null && [ ! -d "$SQUIRREL_APP" ]; then
+    die "鼠须管需要 macOS $MIN_MACOS（Ventura）或更新，这台电脑是 macOS $mv" "可以在「系统设置 → 通用 → 软件更新」里升级后再装。"
+  fi
+  ok "macOS $mv"
+  free=$(free_mb); free=${free:-99999}
+  if [ "$free" -lt "$NEED_MB_CORE" ]; then
+    die "磁盘空间不够：只剩 ${free}MB，至少需要 ${NEED_MB_CORE}MB"
+  elif [ "$free" -lt "$NEED_MB_FULL" ] && { [ "$want_gram" = yes ] || [ "$want_mt" = yes ]; }; then
+    warn "磁盘只剩 ${free}MB，先只装基本功能（全部功能约需 ${NEED_MB_FULL}MB，腾出空间后运行 cn2en install 补装）"
+    want_gram=no; want_mt=no
+  else
+    ok "磁盘空间 ${free}MB"
+  fi
+  curl -fsI --max-time 15 "${CN2EN_NET_CHECK_URL:-https://github.com}" >> "$LOG" 2>&1 ||
+    die "连不上 GitHub" "请检查网络（公司或学校网络可能需要代理），然后重新运行同一条命令。"
+  ok "网络正常"
+
+  # ---- 1. 备份 + 雾凇 ----
+  step "[1/5] 雾凇拼音（词库与方案）"
+  mkdir -p "$STATE"
+  # 只在第一次安装时备份（之后目录里是我们自己装的东西，不用再备份）
+  if [ ! -f "$STATE/backup" ]; then
+    if [ -n "$(find "$RIME" -mindepth 1 -maxdepth 1 ! -name cn2en 2>/dev/null | head -1)" ]; then
+      bak="$RIME.bak-$(date +%Y%m%d-%H%M%S)"
+      cp -R "$RIME" "$bak" && echo "$bak" > "$STATE/backup"
+      ok "你原来的输入法配置已备份到 $bak"
+    else
+      echo none > "$STATE/backup"
+    fi
+  fi
+  if [ ! -f "$RIME/rime_ice.schema.yaml" ]; then
+    install_rime_ice || die "$REASON" "重新运行同一条命令即可从断点继续。"
+  fi
+  ok "已安装"
+
+  # ---- 2. 插件、词表、语法模型 ----
+  step "[2/5] 中译英插件与词表"
+  if [ -f "$RIME/$GRAM" ]; then result_gram="✓"
+  elif [ "$want_gram" = yes ]; then
+    if install_grammar; then result_gram="✓"; set_choice grammar yes; else result_gram="✗ $REASON"; fi
+  else result_gram="– 没装（运行 cn2en install 可补装）"; set_choice grammar no; fi
+  mkdir -p "$RIME/lua"
+  for f in cn2en.tsv cn2en_freq.tsv; do cp "$APP/data/$f" "$RIME/lua/" || die "复制 $f 失败" "$RIME 可能没有写权限。"; done
+  cp "$APP/mac/lua/cn2en.lua" "$RIME/lua/" || die "复制插件失败" "$RIME 可能没有写权限。"
+  install_conf "$APP/mac/default.custom.yaml"
+  install_conf "$APP/mac/squirrel.custom.yaml"
+  tmpc=$(mktemp -d)
+  if [ -f "$RIME/$GRAM" ]; then cp "$APP/mac/rime_ice.custom.yaml" "$tmpc/"
+  else grep -v '^  grammar/' "$APP/mac/rime_ice.custom.yaml" > "$tmpc/rime_ice.custom.yaml"; fi
+  install_conf "$tmpc/rime_ice.custom.yaml"; rm -rf "$tmpc"
+  [ -f "$USER_DICT" ] || cp "$APP/mac/cn2en_user.tsv.template" "$USER_DICT"
+  ok "已安装（词表 $(wc -l < "$APP/data/cn2en.tsv" | tr -d ' ') 条）"
+  case $result_gram in ✓) ok "万象语法模型" ;; ✗*) warn "万象语法模型：${result_gram#✗ }" ;; esac
+
+  # ---- 3. 鼠须管 ----
+  step "[3/5] 鼠须管输入法"
+  if [ -d "$SQUIRREL_APP" ]; then
+    ok "已安装"
+    if ! squirrel_enabled; then
+      "$(squirrel_bin)" --register-input-source >> "$LOG" 2>&1 || true
+      "$(squirrel_bin)" --enable-input-source >> "$LOG" 2>&1 || true
+    fi
+  else
+    install_squirrel || die "$REASON"
+    ok "已安装并加入输入法列表"
+  fi
+
+  # ---- 4. 整句翻译 ----
+  step "[4/5] 本机整句翻译服务"
+  if [ "$want_mt" = no ] && [ ! -f "$RIME/mt/model/model.bin" ]; then
+    result_mt="– 没装（运行 cn2en install 可补装）"; set_choice mt no; info "跳过"
+  elif [ -f "$RIME/mt/model/model.bin" ] && [ "$(get_choice mt)" = off ]; then
+    cp "$APP/mac/mt/server.py" "$RIME/mt/"; result_mt="– 已关闭（cn2en mt on 打开）"; info "按你的设置保持关闭"
+  elif install_mt; then
+    result_mt="✓"; set_choice mt yes; ok "已启动"
+  else
+    result_mt="✗ $REASON"; warn "$REASON"
+    info "其余功能照常可用，首选整句会显示逐词对照。处理好后运行 cn2en install 重试"
+  fi
+
+  # ---- 5. 部署 ----
+  step "[5/5] 部署"
+  link_command
+  echo "$VERSION" > "$STATE/version"
+  reload_rime
+
+  # ---- 总结 ----
+  if [ "$mode" = update ]; then
+    show_changes "$from_version"
+    printf '\n%s已更新到 v%s。%s\n' "$G" "$VERSION" "$N"
+  else
+    printf '\n%s装好了！%s\n' "$G" "$N"
+  fi
+  printf '  输入法与中英注释  ✓\n  万象语法模型      %s\n  整句翻译          %s\n' "$result_gram" "$result_mt"
+  if [ "$(uname)" = Darwin ] && ! squirrel_enabled; then
+    printf '\n%s还差一步：%s系统没有自动启用鼠须管，请在「系统设置 → 键盘 → 文字输入 → 编辑…」里点 + 添加「简体中文 → 鼠须管」\n' "$Y" "$N"
+    open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" >/dev/null 2>&1 || true
+  fi
+  [ "$mode" = install ] && usage_tips
+  log "完成"
+}
+
+usage_tips() {
+  cat <<EOF
+
+${B}现在就能用：${N}切换到「鼠须管」（菜单栏的输入法图标，或按 Ctrl+空格），打 pingguo 试试。
+  ${B}Ctrl+Shift+E${N}      打字时开/关英文
+  ${B}Ctrl+Shift+回车${N}   直接输出英文（不上屏中文）
+  ${B}F4${N}                方案选单：切换「中英/纯中」「整句/查词」
+  ${B}cn2en fix 词 英文${N}  哪个词英文不对，改掉它（例：cn2en fix 质量 quality, grade）
+  ${B}cn2en update${N}      更新到最新版      ${B}cn2en status${N}  出问题时先运行它
+EOF
+}
+
+# 打印 CHANGELOG 里比 from 新的几节：只要「## vX.Y.Z — 标题」和其下的「### 小标题」
+show_changes() {
+  local from=$1
+  [ -n "$from" ] && [ "$from" != "$VERSION" ] || return 0
+  printf '\n%s这次更新%s\n' "$B" "$N"
+  awk -v from="$from" '
+    function norm(v) { sub(/^v/, "", v); while (v ~ /\.0$/) sub(/\.0$/, "", v); return v }
+    /^## v/ { if (norm($2) == norm(from)) exit; sub(/^## /, ""); print "  " $0; next }
+    /^### / { sub(/^### /, ""); print "    · " $0 }
+  ' "$APP/CHANGELOG.md" | head -20
+}
+
+cmd_update() {
+  local old latest tmp src
+  old=$(cat "$STATE/version" 2>/dev/null || echo "$VERSION")
+  step "检查新版本"
+  latest=$(curl -fsSL --max-time 20 "$VERSION_URL" 2>>"$LOG" | tr -d ' \n')
+  [ -n "$latest" ] || die "连不上 GitHub" "检查网络后重试。"
+  if [ "$latest" = "$old" ] && [ "$latest" = "$VERSION" ] && [ "${1:-}" != --force ]; then
+    ok "已经是最新版 v$latest"
+    return 0
+  fi
+  info "v$old → v$latest，下载中…"
+  tmp=$(mktemp -d)
+  fetch "$APP_TARBALL_URL" "$tmp/app.tar.gz" || { rm -rf "$tmp"; die "下载新版本失败" "检查网络后重试。"; }
+  mkdir -p "$tmp/x"
+  if ! run tar -xzf "$tmp/app.tar.gz" -C "$tmp/x"; then rm -rf "$tmp"; die "新版本压缩包损坏，请重试"; fi
+  src=$(find "$tmp/x" -maxdepth 2 -name VERSION -exec dirname {} \; | head -1)
+  { [ -n "$src" ] && [ -x "$src/bin/cn2en" ]; } || { rm -rf "$tmp"; die "新版本压缩包内容不对"; }
+  # 整体替换程序目录（你的个人词表和设置都在 ~/Library/Rime 里，不受影响）
+  mkdir -p "$(dirname "$APP_HOME")"
+  rm -rf "$APP_HOME.old"
+  [ -d "$APP_HOME" ] && mv "$APP_HOME" "$APP_HOME.old"
+  if ! mv "$src" "$APP_HOME"; then
+    [ -d "$APP_HOME.old" ] && mv "$APP_HOME.old" "$APP_HOME"
+    rm -rf "$tmp"; die "替换程序文件失败"
+  fi
+  rm -rf "$APP_HOME.old" "$tmp"
+  exec "$APP_HOME/bin/cn2en" install --update-from "$old"
+}
+
+# ---------- status ----------
+cmd_status() {
+  local problems=0 v f missing=0 n=0 out latest
+  printf '%s打中文，顺便背单词%s  v%s  %s程序：%s%s\n' "$B" "$N" "$(cat "$STATE/version" 2>/dev/null || echo '未安装')" "$D" "$APP" "$N"
+
+  step "输入法"
+  if [ -d "$SQUIRREL_APP" ]; then
+    v=$(defaults read "$SQUIRREL_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "")
+    ok "鼠须管 $v"
+    if squirrel_enabled; then ok "已加入输入法列表"
+    else warn "还没加入输入法列表：运行 cn2en install，或在系统设置 → 键盘 → 文字输入里添加"; fi
+  else
+    bad "没装鼠须管：运行 cn2en install"; problems=$((problems + 1))
+  fi
+  if [ -f "$RIME/rime_ice.schema.yaml" ]; then ok "雾凇拼音"; else bad "没装雾凇拼音：运行 cn2en install"; problems=$((problems + 1)); fi
+  if [ -f "$RIME/$GRAM" ]; then ok "万象语法模型"; else warn "没装万象语法模型（整句组词会差一些）：运行 cn2en install"; fi
+
+  step "中译英"
+  for f in $DATA_FILES; do
+    [ -f "$RIME/lua/$f" ] || { bad "缺少 $f"; missing=1; }
+  done
+  if [ "$missing" = 1 ]; then problems=$((problems + 1))
+  elif cmp -s "$RIME/lua/cn2en.lua" "$APP/mac/lua/cn2en.lua" && cmp -s "$RIME/lua/cn2en.tsv" "$APP/data/cn2en.tsv"; then
+    ok "插件与词表（$(wc -l < "$RIME/lua/cn2en.tsv" | tr -d ' ') 条）"
+  else
+    warn "装的插件和程序目录里的不一致：运行 cn2en install 同步"
+  fi
+  if grep -q 'cn2en' "$RIME/rime_ice.custom.yaml" 2>/dev/null; then ok "已挂到雾凇拼音上"
+  else bad "雾凇拼音没挂上插件：运行 cn2en install"; problems=$((problems + 1)); fi
+  [ -f "$USER_DICT" ] && n=$(grep -c $'^[^#].*\t' "$USER_DICT" || true)
+  ok "个人词表 $n 条（cn2en fixes 查看）"
+
+  step "整句翻译服务"
+  if [ ! -f "$RIME/mt/model/model.bin" ]; then
+    info "没装（可选）：运行 cn2en install 补装"
+  elif out=$(mt_running); then
+    ok "运行中：你好 → ${out%%$'\t'*}"
+  elif [ "$(get_choice mt)" = off ]; then
+    info "已关闭（cn2en mt on 打开）"
+  else
+    bad "没有响应：运行 cn2en mt on 重启；日志 $RIME/mt/server.err.log"; problems=$((problems + 1))
+  fi
+
+  step "版本"
+  latest=$(curl -fsSL --max-time 10 "$VERSION_URL" 2>/dev/null | tr -d ' \n')
+  if [ -z "$latest" ]; then info "连不上 GitHub，跳过新版本检查"
+  elif [ "$latest" != "$VERSION" ]; then warn "有新版本 v$latest：运行 cn2en update"
+  else ok "已是最新版 v$VERSION"; fi
+
+  echo
+  if [ "$problems" = 0 ]; then printf '%s一切正常。%s\n' "$G" "$N"
+  else printf '%s发现 %d 个问题，按上面的提示处理；日志在 %s%s\n' "$R" "$problems" "$LOG" "$N"; fi
+}
+
+# ---------- fix ----------
+cmd_fix() {
+  local undo=0 word en orig
+  [ $# -ge 2 ] || die "用法不对" "  cn2en fix 中文 英文     例如 cn2en fix 质量 quality, grade
+  cn2en fix 中文 -        不再显示这个词的英文
+  cn2en fix --undo 中文   撤销你对这个词的修改"
+  [ -f "$USER_DICT" ] || cp "$APP/mac/cn2en_user.tsv.template" "$USER_DICT"
+  if [ "$1" = --undo ]; then undo=1; shift; fi
+  word=$1; shift
+  en="$*"
+  case $word in *$'\t'*|'#'*) die "词里不能有 Tab，也不能以 # 开头" ;; esac
+  awk -F'\t' -v w="$word" '$1 != w' "$USER_DICT" > "$USER_DICT.tmp" && mv "$USER_DICT.tmp" "$USER_DICT"
+  if [ "$undo" = 1 ]; then
+    ok "已撤销「$word」的个人修正，恢复词表原来的英文"
+  else
+    printf '%s\t%s\n' "$word" "$en" >> "$USER_DICT"
+    if [ "$en" = - ]; then ok "「$word」不再显示英文"; else ok "「$word」→ $en"; fi
+    orig=$(awk -F'\t' -v w="$word" '$1 == w { print $2; exit }' "$RIME/lua/cn2en.tsv" 2>/dev/null)
+    [ -n "$orig" ] && info "原来是：$orig（撤销：cn2en fix --undo $word）"
+  fi
+  reload_rime
+  [ "$undo" = 1 ] || info "觉得这个修正对大家都有用？欢迎反馈：$GH/issues"
+}
+
+cmd_fixes() {
+  if [ ! -f "$USER_DICT" ] || ! grep -q $'^[^#].*\t' "$USER_DICT"; then
+    info "个人词表是空的。用 cn2en fix 中文 英文 添加"; return 0
+  fi
+  grep $'^[^#].*\t' "$USER_DICT" | awk -F'\t' '{ printf "  %s → %s\n", $1, $2 }'
+  info "文件：$USER_DICT（也可以直接编辑，改完运行 cn2en reload）"
+}
+
+# ---------- mt ----------
+cmd_mt() {
+  [ -f "$RIME/mt/model/model.bin" ] || die "还没装整句翻译服务" "运行 cn2en install 补装。"
+  case ${1:-} in
+    on)  set_choice mt yes; if mt_start; then ok "翻译服务已启动"; else bad "启动后没有响应，看 $RIME/mt/server.err.log"; fi ;;
+    off) mt_stop; set_choice mt off; ok "翻译服务已关闭，释放约 250MB 内存；首选整句改为逐词对照" ;;
+    *)   die "用法：cn2en mt on 或 cn2en mt off" ;;
+  esac
+}
+
+# ---------- uninstall ----------
+cmd_uninstall() {
+  local all=0 name f backup link
+  [ "${1:-}" = --all ] && all=1
+  step "卸载中译英插件"
+  mt_stop
+  rm -rf "$RIME/mt"
+  for f in $DATA_FILES; do rm -f "$RIME/lua/$f"; done
+  for name in rime_ice.custom.yaml default.custom.yaml squirrel.custom.yaml; do
+    if [ -f "$RIME/$name" ] && cmp -s "$RIME/$name" "$STATE/pristine/$name"; then rm -f "$RIME/$name"
+    elif [ -f "$RIME/$name" ]; then
+      case $name in
+        rime_ice.custom.yaml) warn "$name 你改过，没删；记得去掉里面 cn2en 相关的几行，否则雾凇会找不到插件" ;;
+        *) info "$name 你改过，保留着" ;;
+      esac
+    fi
+    rm -f "$RIME/$name.new"
+  done
+  if [ -f "$USER_DICT" ] && grep -q $'^[^#].*\t' "$USER_DICT"; then info "个人词表留着：$USER_DICT"
+  else rm -f "$USER_DICT"; fi
+  backup=$(cat "$STATE/backup" 2>/dev/null)
+  rm -rf "$STATE"
+  ok "插件、词表、翻译服务已删除"
+  if [ "$all" = 1 ] && ask "连鼠须管输入法和整个 $RIME 一起删除吗？（打字记录、词库都会删掉）" N; then
+    "$(squirrel_bin)" --quit >> "$LOG" 2>&1 || true
+    info "删除输入法需要开机密码"
+    # shellcheck disable=SC2024  # 日志由普通用户写
+    sudo rm -rf "$SQUIRREL_APP" && { sudo pkgutil --forget im.rime.inputmethod.Squirrel >> "$LOG" 2>&1 || true; }
+    rm -rf "$RIME"
+    ok "已删除鼠须管和 $RIME（输入法菜单里的图标注销一次后消失）"
+    [ -n "$backup" ] && [ -d "$backup" ] && info "安装前的备份还在：$backup（mv \"$backup\" \"$RIME\" 可恢复）"
+  else
+    reload_rime
+  fi
+  link=$(command -v cn2en 2>/dev/null)
+  [ -n "$link" ] && [ -L "$link" ] && rm -f "$link"
+  [ "$APP" = "$(cd "$APP_HOME" 2>/dev/null && pwd -P)" ] && rm -rf "$APP_HOME"
+  ok "卸载完成"
+}
+
+cmd_help() {
+  cat <<EOF
+${B}cn2en${N} v$VERSION — 打中文，顺便背单词
+
+  ${B}cn2en install${N}            安装或修复（可以重复运行，从断点继续）
+                           --no-mt 不装整句翻译   --no-grammar 不下载语法模型
+  ${B}cn2en update${N}             更新到最新版（个人词表、你改过的外观设置都会保留）
+  ${B}cn2en status${N}             检查各部分是否正常
+  ${B}cn2en fix 中文 英文${N}       修正一个词的英文，例如 cn2en fix 质量 quality, grade
+  ${B}cn2en fix 中文 -${N}          不再显示这个词的英文
+  ${B}cn2en fix --undo 中文${N}     撤销修正
+  ${B}cn2en fixes${N}              列出你的修正
+  ${B}cn2en mt on|off${N}          开/关本机翻译服务（关掉省约 250MB 内存）
+  ${B}cn2en reload${N}             重新部署输入法
+  ${B}cn2en uninstall${N} [--all]  卸载（--all 连鼠须管、雾凇一起删）
+
+  日志：$LOG
+EOF
+  usage_tips
+}
+
+case ${1:-help} in
+  install)   shift; cmd_install "$@" ;;
+  update)    shift; cmd_update "$@" ;;
+  status|doctor) cmd_status ;;
+  fix)       shift; cmd_fix "$@" ;;
+  fixes)     cmd_fixes ;;
+  mt)        shift; cmd_mt "$@" ;;
+  reload)    reload_rime ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  version|--version|-v) echo "$VERSION" ;;
+  help|-h|--help) cmd_help ;;
+  *) die "不认识的命令 $1" "运行 cn2en help 查看用法" ;;
+esac

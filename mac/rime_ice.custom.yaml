@@ -8,3 +8,14 @@ patch:
   # 中译英：候选旁显示英文释义；首选整句走本机翻译服务
   engine/filters/+:
     - lua_filter@*cn2en
+  # 两个开关，在方案选单（F4 或 Ctrl+`）里切换：
+  #   中英 / 纯中：要不要显示英文
+  #   整句 / 查词：首选是否整句翻译（关掉后只查词表、逐词对照，不用翻译服务）
+  switches/+:
+    - name: cn2en_off
+      states: [ 中英, 纯中 ]
+    - name: cn2en_no_mt
+      states: [ 整句, 查词 ]
+  # 打字时按 Ctrl+Shift+E 临时开关英文
+  key_binder/bindings/+:
+    - { when: composing, accept: Control+Shift+E, toggle: cn2en_off }

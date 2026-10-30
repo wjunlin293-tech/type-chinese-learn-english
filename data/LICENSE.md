@@ -6,7 +6,6 @@
 | `overrides.tsv` | 手工校正表 | CC BY-SA 4.0（随 `cn2en.tsv` 一同发布） |
 | `cn2en_ecdict_reverse.tsv` | 由 ECDICT 英→中释义反向整理（`tools/build_ecdict_reverse.py`） | MIT（见下方 ECDICT 许可） |
 | `cn2en_freq.tsv` | `cn2en.tsv` 词条的词频，取自 jieba 词典（`tools/build_freq.py`） | MIT（见下方 jieba 许可） |
-| `cn2en_senses.tsv` | 常用词的更多英文说法，由 ECDICT 英→中释义反向整理（`tools/build_senses.py`），只用于核对整句译文 | MIT（见下方 ECDICT 许可） |
 
 ## CC-CEDICT
 

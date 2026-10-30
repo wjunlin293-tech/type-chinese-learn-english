@@ -1,10 +1,9 @@
 -- cn2en.lua: 给中文候选加英文注释。
 --   1) 命中 cn2en.tsv 的词：显示词表里的 1~2 个常用英文；
 --   2) 首选候选（通常是整句）：按页打包请求本机翻译服务(127.0.0.1:18085)；
---      译文要过三道检查，不通过就改用逐词对照：
+--      译文要过两道检查，不通过就改用逐词对照：
 --        · 长度：英文词数远多于原文实词数（小模型给半句「脑补」了内容）；
---        · 把握：模型自己给出的平均对数概率太低；
---        · 覆盖：原文的实词在译文里大多找不到对应英文（漏译、错译）；
+--        · 把握：模型自己给出的平均对数概率太低（多半是硬译、瞎猜，如「躺平了 → Lie down.」）；
 --   3) 其余词表没有的候选（多半是半句）：逐词对照，如「我今天下午 → I · today · afternoon」。
 -- 逐词对照用词频做最大概率分词（研究/生命，而不是 研究生/命），
 -- 并处理量词（三本书 → three · book）、宾语代词（帮我 → help · me）等常见搭配。
@@ -12,7 +11,7 @@
 -- 个人词表 ~/Library/Rime/cn2en_user.tsv 优先级最高，更新时不会被覆盖（cn2en fix 命令写的就是它）。
 -- 开关（在方案选单 F4 里，或按快捷键）：cn2en_off 关掉英文；cn2en_no_mt 只查词、不整句翻译。
 
-local dict, freq, senses = nil, nil, nil
+local dict, freq = nil, nil
 local log_total = 0
 local mt_cache = {}
 local mt_cache_size = 0
@@ -22,8 +21,9 @@ local MT_TIMEOUT = CN2EN_MT_TIMEOUT or "0.3"   -- 秒；超时就不显示译文
 local MT_MIN_CHARS = 4     -- 首选候选至少 4 个字才整句翻译
 local MT_MIN_CHARS_PARTICLE = 2  -- 带语气词的短句（你好吗、下雨了）2 个字起就整句翻译
 local MT_MAX_CHARS = 60
-local MT_MIN_COVERAGE = 0.4      -- 原文实词在译文里找得到对应英文的比例，低于此值判为错译
-local MT_MIN_SCORE = -1.5        -- 模型对译文的平均对数概率，低于此值说明模型自己也没把握
+-- 模型对译文的平均对数概率，低于此值说明模型自己也没把握。按真模型实测定的：
+-- 150 句日常/工作/学习/网络用语里，通顺译文大多在 -0.2 ~ -0.9，硬译瞎猜的多在 -1 以下
+local MT_MIN_SCORE = -1.0
 local MAX_WORD = 6         -- 逐词对照时最长匹配 6 个字
 local USER_FREQ = 300      -- 个人词表里多字词的词频
 local GLOSS_SEP = " · "
@@ -65,13 +65,6 @@ local BEFORE_OBJECT = set_of({ "给", "跟", "和", "对", "帮", "帮助", "让
   "理", "恨", "怪", "夸", "催", "喊", "骗", "通知", "提醒", "联系", "回复", "打扰", "麻烦", "原谅", "欠", "管", "看",
   "想", "想念", "见", "认识", "陪着", "跟着", "带着", "离开", "接", "选", "支持", "保护", "照顾", "关心", "了解" })
 
--- 整句覆盖检查时不算「实词」的词：译文里不一定有对应的英文单词
-local FUNCTION_WORD = set_of({ "很", "也", "都", "就", "还", "在", "是", "有", "又", "再", "才", "太", "真", "挺",
-  "和", "跟", "与", "或", "或者", "被", "给", "让", "对", "从", "到", "这", "那", "这个", "那个", "这样", "那样",
-  "一", "一下", "一点", "有点", "什么", "怎么", "为什么", "因为", "所以", "但是", "可是", "然后", "就是", "不是",
-  "没有", "没", "不", "别", "要", "会", "能", "可以", "想", "得", "去", "来", "说", "做", "觉得", "知道", "已经",
-  "正在", "一直", "一起", "非常", "特别", "比较", "更", "最", "多", "少", "好", "大", "小" })
-
 -- 句末这些语气词表示疑问，逐词对照时在末尾补一个问号
 local QUESTION = set_of({ "吗", "呢", "么" })
 
@@ -94,18 +87,17 @@ end
 
 local function load_dict()
   if dict then return dict end
-  dict, freq, senses = {}, {}, {}
+  dict, freq = {}, {}
   if not read_tsv("cn2en.tsv", function(k, v) dict[k] = v end) then
     log.error("cn2en: cannot open " .. data_dir() .. "/cn2en.tsv")
   end
-  -- 下面两个文件可选：没有词频就退化为「切出的词越少越好」，没有同义词就只用词表释义做覆盖检查
+  -- 词频表可选：没有就退化为「切出的词越少越好」
   local total = 0
   read_tsv("cn2en_freq.tsv", function(k, v)
     local n = tonumber(v)
     if n then freq[k] = n; total = total + n end
   end)
   log_total = math.log(math.max(total, 1))
-  read_tsv("cn2en_senses.tsv", function(k, v) senses[k] = v end)
   -- 个人词表：覆盖同名词条；新加的多字词给一个中等词频，分词时不被拆开
   local user = CN2EN_USER_FILE or (rime_api.get_user_data_dir() .. "/cn2en_user.tsv")
   local f = io.open(user, "r")
@@ -243,113 +235,6 @@ local function gloss(text, d)
   return g, #out, particles, toks
 end
 
--- ---------- 整句译文核对 ----------
-
--- 常见不规则词形还原到原形，便于和词表里的英文比对
-local IRREGULAR = {
-  went = "go", gone = "go", ate = "eat", eaten = "eat", saw = "see", seen = "see", was = "be", were = "be",
-  been = "be", had = "have", has = "have", did = "do", done = "do", made = "make", took = "take", taken = "take",
-  gave = "give", given = "give", came = "come", got = "get", gotten = "get", bought = "buy", thought = "think",
-  told = "tell", said = "say", found = "find", felt = "feel", left = "leave", met = "meet", slept = "sleep",
-  ran = "run", wrote = "write", written = "write", spoke = "speak", spoken = "speak", knew = "know",
-  known = "know", brought = "bring", began = "begin", begun = "begin", became = "become", kept = "keep",
-  lost = "lose", paid = "pay", sent = "send", sat = "sit", stood = "stand", taught = "teach",
-  understood = "understand", won = "win", children = "child", men = "man", women = "woman", people = "person",
-  better = "good", best = "good", worse = "bad", worst = "bad", feet = "foot", teeth = "tooth", mice = "mouse",
-  drove = "drive", driven = "drive", flew = "fly", flown = "fly", fell = "fall", fallen = "fall", forgot = "forget",
-  forgotten = "forget", broke = "break", broken = "break", chose = "choose", chosen = "choose", drank = "drink",
-  drunk = "drink", sang = "sing", sung = "sing", swam = "swim", threw = "throw", thrown = "throw", wore = "wear",
-  worn = "wear", heard = "hear", held = "hold", led = "lead", lent = "lend", meant = "mean", sold = "sell",
-  spent = "spend", built = "build", caught = "catch", fought = "fight", hung = "hang", hid = "hide",
-  hidden = "hide", rode = "ride", ridden = "ride", rose = "rise", risen = "rise", shot = "shoot", stole = "steal",
-  stolen = "steal", struck = "strike", woke = "wake", woken = "wake", ["i'm"] = "i", ["it's"] = "it",
-  ["don't"] = "do", ["didn't"] = "do", ["can't"] = "can", ["won't"] = "will", ["isn't"] = "be",
-}
-
-local function stem(w)
-  w = w:lower()
-  if IRREGULAR[w] then return IRREGULAR[w] end
-  local s = w
-  if #s > 4 and s:sub(-3) == "ies" then s = s:sub(1, -4) .. "y"
-  elseif #s > 4 and s:sub(-3) == "ied" then s = s:sub(1, -4) .. "y"
-  elseif #s > 5 and s:sub(-3) == "ing" then s = s:sub(1, -4)
-  elseif #s > 4 and s:sub(-2) == "ed" then s = s:sub(1, -3)
-  elseif #s > 4 and s:sub(-2) == "ly" then s = s:sub(1, -3)
-  elseif #s > 3 and s:sub(-1) == "s" and s:sub(-2) ~= "ss" then s = s:sub(1, -2)
-  end
-  -- running → runn → run，stopped → stopp → stop
-  if #s >= 4 and s:sub(-1) == s:sub(-2, -2) and s:sub(-1):match("[bdgklmnprt]") then s = s:sub(1, -2) end
-  return s
-end
-
-local function same_word(a, b)
-  if a == b then return true end
-  local n = math.min(#a, #b)
-  return n >= 4 and a:sub(1, n) == b:sub(1, n)
-end
-
-local NUMERAL = set_of({ "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "百", "千", "万", "两", "半",
-  "0", "1", "2", "3", "4", "5", "6", "7", "8", "9" })
-local function has_numeral(w)
-  for _, cp in utf8.codes(w) do
-    if NUMERAL[utf8.char(cp)] then return true end
-  end
-  return false
-end
-local NUMBER_WORDS = set_of({ "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-  "hundred", "thousand", "half", "once", "twice", "first", "second", "third", "noon", "midnight" })
-local SENSE_STOP = set_of({ "a", "an", "the", "of", "to", "be", "one", "in", "on", "at", "for", "with", "by",
-  "or", "and", "up", "out", "oneself", "sb", "sth", "measure", "word", "suffix", "prefix", "particle" })
-
-local function english_words(s, into)
-  for w in s:gmatch("[%a']+") do
-    local l = w:lower()
-    if not SENSE_STOP[l] then into[#into + 1] = stem(l) end
-  end
-  return into
-end
-
--- 一个中文词可能对应的英文（词表释义 + 同义词表；多字词再加上每个字的释义，如 取钱 → take · money）
-local function candidates(w, d)
-  local c = english_words(d[w] or "", {})
-  english_words(senses[w] or "", c)
-  local n = utf8.len(w) or 0
-  if n > 1 then
-    for _, cp in utf8.codes(w) do
-      local ch = utf8.char(cp)
-      english_words(d[ch] or "", c)
-      english_words(senses[ch] or "", c)
-    end
-  end
-  return c
-end
-
--- 原文实词在译文里找得到对应英文的比例。每个英文词只能对应一个中文词
--- （「会议室开会」不能都靠一个 meeting 过关）。没有实词时返回 nil。
-local function coverage(tr, toks, d)
-  local tr_words = english_words(tr, {})
-  local has_number = tr:match("%d") ~= nil
-  for _, w in ipairs(tr_words) do if NUMBER_WORDS[w] then has_number = true end end
-  local used, content, hits = {}, 0, 0
-  for _, t in ipairs(toks) do
-    if t.en and not FUNCTION_WORD[t.w] and not PRONOUN[t.w] then
-      content = content + 1
-      local hit = has_number and has_numeral(t.w)
-      if not hit then
-        for _, c in ipairs(candidates(t.w, d)) do
-          for j, w in ipairs(tr_words) do
-            if not used[j] and same_word(c, w) then hit, used[j] = true, true break end
-          end
-          if hit then break end
-        end
-      end
-      if hit then hits = hits + 1 end
-    end
-  end
-  if content == 0 then return nil end
-  return hits / content, content
-end
-
 -- 一次请求翻译多条，结果写入 mt_cache（失败/超时则什么都不写）。
 -- 服务返回「译文<TAB>平均对数概率」；旧版服务只返回译文，也能用。
 local function translate_batch(texts)
@@ -379,17 +264,14 @@ end
 -- 译文是否可信。
 -- 长度：英文词数不应远多于原文实词数（否则多半是给半句脑补了内容）；
 --       语气词也带意思（了吗 ≈ have ... yet?），每个放宽 1 个英文词。
--- 把握：模型给出的平均对数概率太低，说明它自己也在瞎猜。
--- 覆盖：原文实词大多在译文里找不到对应英文，说明漏译或错译。
-local function mt_plausible(tr, note, d)
-  local en_words = 0
+-- 把握：模型给出的平均对数概率太低，说明它自己也在瞎猜。旧版服务不返回分数时跳过这一项。
+local function mt_plausible(tr, note)
+  local en_words, gloss_words = 0, 0
   for _ in tr.text:gmatch("%a+") do en_words = en_words + 1 end
-  if en_words > 2.2 * math.max(note.n, 1) + 1 + (note.p or 0) then return false end
-  if tr.score and tr.score < MT_MIN_SCORE then return false end
-  local cov, content = coverage(tr.text, note.toks, d)
-  if cov == nil then return true end
-  if content == 1 then return cov > 0 end   -- 只有一个实词：至少要对上它
-  return cov >= MT_MIN_COVERAGE
+  -- 逐词对照里一个词条可能是短语（好久不见 → long time no see），按英文单词数算更公平
+  for _ in (note.gloss or ""):gmatch("%a+") do gloss_words = gloss_words + 1 end
+  if en_words > 2.2 * math.max(note.n, gloss_words, 1) + 1 + (note.p or 0) then return false end
+  return not (tr.score and tr.score < MT_MIN_SCORE)
 end
 
 local function with_comment(cand, en)
@@ -412,11 +294,11 @@ local function flush(buf, d, first_idx, use_mt)
     if d[t] then
       notes[k] = d[t]
     elseif is_all_cjk(t) then
-      local g, n_words, n_particles, toks = gloss(t, d)
+      local g, n_words, n_particles = gloss(t, d)
       local len = utf8.len(t) or 0
       local min_len = (n_particles or 0) > 0 and MT_MIN_CHARS_PARTICLE or MT_MIN_CHARS
       if use_mt and first_idx + k - 1 == 1 and len >= min_len and len <= MT_MAX_CHARS then
-        notes[k] = { gloss = g, n = n_words, p = n_particles, toks = toks }
+        notes[k] = { gloss = g, n = n_words, p = n_particles }
         if mt_cache[t] == nil then todo[#todo + 1] = t end
       else
         notes[k] = g
@@ -428,7 +310,7 @@ local function flush(buf, d, first_idx, use_mt)
     local note = notes[k]
     if type(note) == "table" then
       local tr = mt_cache[cand.text]
-      if tr and mt_plausible(tr, note, d) then note = tr.text else note = note.gloss end
+      if tr and mt_plausible(tr, note) then note = tr.text else note = note.gloss end
     end
     if note then yield(with_comment(cand, note)) else yield(cand) end
   end
@@ -456,4 +338,4 @@ local function filter(input, env)
 end
 
 -- 末尾的 _test 只给 tools/test_cn2en.lua 用，Rime 只认 init / func
-return { init = init, func = filter, _test = { gloss = gloss, coverage = coverage, mt_plausible = mt_plausible } }
+return { init = init, func = filter, _test = { gloss = gloss, mt_plausible = mt_plausible } }
