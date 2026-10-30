@@ -184,7 +184,11 @@ install_conf() {
 }
 
 squirrel_bin() { echo "$SQUIRREL_APP/Contents/MacOS/Squirrel"; }
-squirrel_enabled() { defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null | grep -qi 'rime\|squirrel'; }
+# 先把输出存下来再查：开着 pipefail 时，grep -q 找到就提前退出，前面的命令会被 SIGPIPE 打断，整条管道就被判失败
+squirrel_enabled() {
+  local sources; sources=$(defaults read com.apple.HIToolbox AppleEnabledInputSources 2>/dev/null)
+  case $sources in *[Rr]ime*|*[Ss]quirrel*) return 0 ;; *) return 1 ;; esac
+}
 
 reload_rime() {
   if [ -x "$(squirrel_bin)" ]; then
@@ -265,7 +269,7 @@ install_rime_ice() {
 }
 
 install_squirrel() {
-  if [ -z "${CN2EN_SKIP_ADMIN_CHECK:-}" ] && ! id -Gn | grep -qw admin; then
+  if [ -z "${CN2EN_SKIP_ADMIN_CHECK:-}" ] && ! case " $(id -Gn) " in *" admin "*) true ;; *) false ;; esac; then
     REASON="安装输入法需要管理员账户，请用管理员账户登录后再运行"; return 1
   fi
   local tmp; tmp=$(mktemp -d)
