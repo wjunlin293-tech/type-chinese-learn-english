@@ -7,6 +7,7 @@ CEDICT 没有的词，退回 ECDICT 反查结果（旧版 cn2en.tsv）。
 
 用法: build_cn2en_v2.py cedict_ts.u8 ecdict.csv old_cn2en.tsv out.tsv [overrides.tsv]
 手工校正表 overrides.tsv 优先级最高。
+只改了 overrides.tsv 的话，不必重新下载数据源，用 apply_overrides.py 直接合并即可。
 """
 import csv, math, re, sys
 from collections import defaultdict
@@ -146,8 +147,11 @@ if OVERRIDES:
             line = line.rstrip('\n')
             if not line or line.startswith('#') or '\t' not in line:
                 continue
-            cn, en = line.split('\t', 1)
-            result[cn.strip()] = en.strip()
+            cn, en = (s.strip() for s in line.split('\t', 1))
+            if en == '-':                    # 英文写 - 表示从词表里删掉这个词
+                result.pop(cn, None)
+            else:
+                result[cn] = en
             n_over += 1
 
 with open(OUT, 'w', encoding='utf-8') as f:

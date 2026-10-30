@@ -1,0 +1,99 @@
+# cn2en 回归测试：lua tools/test_cn2en.lua tools/test_cases.txt --no-mt --check
+# 格式：候选1|候选2... => 期望片段 / 期望片段 / !不应出现的片段（只检查首选候选的英文）
+# 这些都是 v1.1 修正前实际出现过的错配。
+
+# ---------- 单字：以前取的是生僻/古义 ----------
+就 => just
+才 => only / !ability
+上 => up / !first
+里 => in / !li
+带 => bring / !band
+别 => don't / !leave
+困 => sleepy
+热 => hot / !warm up
+闲 => idle / !enclosure
+点 => point / !tap
+等 => wait
+关 => close / !mountain pass
+呢 => question / !wool
+页 => page / !head
+猪 => pig / !hog
+
+# ---------- 常用词 ----------
+奶奶 => grandma / !breasts
+姥姥 => grandma / !goody
+很好 => very good / !devastating
+我想 => I want / !methinks
+意思 => meaning
+酒店 => hotel / !wine shop
+先生 => Mr / !teacher
+打印 => print / !stamp
+流行 => popular / !obtain
+妹妹 => younger sister
+年龄 => age
+收入 => income
+出差 => business trip
+爬山 => climb
+不知道 => don't know / !unknown
+往返 => round trip / !shunt
+嫁 => marry / !shift
+
+# ---------- 聊天 / 网络用语 ----------
+摸鱼 => slack off
+内卷 => rat race
+截图 => screenshot
+拉黑 => block
+好久不见 => long time no see
+在吗 => there?
+好饿 => so hungry
+吃了吗 => eaten
+收到 => got it
+要不要 => want to?
+好不好 => OK?
+
+# ---------- 半句：分词 ----------
+研究生命 => research · life / !graduate
+我们要研究生命的起源 => research · life · origin
+这道菜很好吃 => tasty / !devastating
+今天天气很好 => weather · very good / !devastating
+如果你有时间的话可以来找我 => have time / !sometimes
+我找不到钥匙 => can't find · key
+我觉得他说的有道理 => make sense
+我昨天晚上看了一部很好看的电影 => good-looking · movie / !ministry / !single
+
+# ---------- 半句：量词 ----------
+这本书 => this · book / !originally
+老师让我们写一篇论文 => write · a · paper / !sheet
+这家酒店很贵 => this · hotel · very · expensive
+这件事情跟你没关系 => this · thing
+三本书 => three · book
+
+# ---------- 半句：代词 ----------
+帮我拿一下快递 => help · me · take
+你能帮我一下吗 => help · me
+老师让我们写作业 => let · us
+如果你有空可以来找我 => look for · me
+所以我 => therefore · I / !me
+因为他 => because · he
+我的电脑坏了 => my · computer
+这是我的 => mine
+你的朋友 => your · friend
+
+# ---------- 半句：介词 / 方位 / 动词搭配 ----------
+他对我很好 => to · me
+我对这个不感兴趣 => to · this
+请把文件发给我 => send to · me
+我马上到 => arrive
+外卖到了你下来拿一下 => takeout · arrive
+他到北京了 => to · Beijing
+市场上 => market · on
+毕业后 => graduate · after
+我下周要出差 => next week · want · business trip
+
+# ---------- 长句 ----------
+今天下午三点在会议室开会讨论项目进度 => today · afternoon · three o'clock · at · meeting room · have a meeting · discuss · project · progress
+这个周末我打算和朋友去爬山 => weekend · I · plan · and · friend · go · climb a mountain
+因为下雨所以比赛取消了 => because · rain · therefore · competition · cancel
+我们公司最近在招聘前端工程师 => company · recently · at · recruit · front end · engineer
+我明天要考试今天得复习 => tomorrow · want · exam · today · review
+虽然很累但是很开心 => although · very · tired · but · very · happy

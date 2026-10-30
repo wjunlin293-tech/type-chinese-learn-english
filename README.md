@@ -4,9 +4,11 @@
 
 基于 macOS 上的 Rime 输入法（鼠须管 + 雾凇拼音），**全部本地运行，不联网上传任何输入内容**。
 
-- **词**：查本地词表（13 万条），显示 1–2 个常用英文，例如「质量 quality」「握紧 clench」。
-- **整句**：首选候选交给本机翻译模型（OPUS-MT，CTranslate2 int8），例如「明天下午三点开会 We'll meet tomorrow at 3:00 p.m.」。
-- **半句**：逐词对照，不让模型“脑补”，例如「我今天下午 I · today · afternoon」。
+当前版本 **v1.1**（中英意思对不上的问题集中修了一轮），改动见 [CHANGELOG.md](CHANGELOG.md)；从旧版升级见[下文](#从-v10-升级)。
+
+- **词**：查本地词表（13 万条，常用的 3000 多个字词逐个人工核对过），显示 1–2 个常用英文，例如「质量 quality」「握紧 clench」。
+- **整句**：首选候选交给本机翻译模型（OPUS-MT，CTranslate2 int8），例如「明天下午三点开会 We'll meet tomorrow at 3:00 p.m.」。译文会和原文逐词核对，漏译、错译、模型没把握时改用逐词对照。
+- **半句**：逐词对照，不让模型“脑补”，例如「我今天下午 I · today · afternoon」「帮我拿一下快递 help · me · take · a bit · express delivery」。
 - **纠错**：键盘邻键纠错（按偏到相邻键的单个字母）+ 雾凇自带的字母顺序纠错。
 - **组句**：雾凇拼音 + 万象简体语法模型。
 
@@ -24,13 +26,21 @@
                                             │
                      词表命中 ◀── cn2en.tsv ─┤
                      首选整句 ──▶ 127.0.0.1:18085 本机翻译服务（超时 0.3 秒即放弃，不卡打字）
-                     其余半句 ──▶ 正向最大匹配，逐词对照
+                              └─▶ 核对译文（长度 / 模型把握 / 实词覆盖），不通过 ─┐
+                     其余半句 ──▶ 按词频分词，逐词对照 ◀─────────────────────────┘
 ```
 
-- 首选候选的模型译文，如果英文词数远多于原文实词数，判定为模型给半句脑补了内容，改用逐词对照。
+- 首选候选的模型译文要过三道检查，任何一道不通过就改用逐词对照：
+  - **长度**：英文词数远多于原文实词数，判定为模型给半句脑补了内容；
+  - **把握**：模型给这条译文的平均对数概率低于 −1.5，说明它自己也在猜；
+  - **覆盖**：原文的实词（去掉「很、也、在、是」这类虚词）在译文里能找到对应英文的不到 40%，判定为漏译或错译。对应英文取自词表释义和 `cn2en_senses.tsv`（ECDICT 反查的同义说法），会做词形还原（went → go、meeting → meet）。例如「我们一起去吃饭吧」被译成 "Let's go to the bathroom together." 时，「吃饭」在译文里找不到，改显示 we · together · go · eat。
+- 逐词对照的分词按词频算整句概率最大的切法（「研究/生命」而不是「研究生/命」，「很/好吃」而不是「很好/吃」），并处理常见搭配：
+  - 量词：数词、指示词后的量词不翻译（「三本书 three · book」「这道菜 this · dish」）；
+  - 代词：动词、介词后用宾格（「帮我 help · me」），后面跟「的」用所有格（「我的电脑 my · computer」「这是我的 … mine」）；
+  - 介词与方位词：「他对我很好 he · to · me」「发给我 send to · me」「我马上到 … arrive」「市场上 market · on」。
 - 语气词（了、吗、呢、吧……）：首选候选带语气词时 2 个字起就整句翻译（「下雨了 It's raining.」）；逐词对照时跳过语气词，句末是「吗 / 呢」则补问号（「饿了吗 hungry?」）。
 - 一页候选打包成一次请求；词表只在启动时加载一次；译文两级缓存（Lua 侧 + 服务侧）。
-- 实测（Apple M1）：一页 5 个候选整批翻译 70–100ms，缓存命中约 10ms。
+- 实测（Apple M1，v1.0）：一页 5 个候选整批翻译 70–100ms，缓存命中约 10ms。v1.1 的服务对每条新译文多做一次打分（`score_batch`，只过一遍模型、不逐词生成），耗时会略增，尚未在 M1 上重新实测；如果首选整句经常显示不出来，可以把 `cn2en.lua` 里的 `MT_TIMEOUT` 调大一点。
 
 ## 安装（macOS）
 
@@ -60,7 +70,7 @@ git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git ~/ty
 cd ~/type-chinese-learn-english
 mkdir -p ~/Library/Rime/lua
 cp mac/default.custom.yaml mac/rime_ice.custom.yaml mac/squirrel.custom.yaml ~/Library/Rime/
-cp mac/lua/cn2en.lua data/cn2en.tsv ~/Library/Rime/lua/
+cp mac/lua/cn2en.lua data/cn2en.tsv data/cn2en_freq.tsv data/cn2en_senses.tsv ~/Library/Rime/lua/
 ```
 
 ### 4. 下载万象语法模型（约 400MB，可选但强烈建议）
@@ -95,6 +105,19 @@ curl -s "http://127.0.0.1:18085/t?q=%E4%BD%A0%E5%A5%BD"   # 应返回 Hello.
 
 或在菜单栏鼠须管图标里点「重新部署」。
 
+## 从 v1.0 升级
+
+v1.1 新增了两个数据文件、改了翻译服务，四步换上即可（不用重装模型）：
+
+```sh
+cd ~/type-chinese-learn-english && git pull
+cp mac/lua/cn2en.lua data/cn2en.tsv data/cn2en_freq.tsv data/cn2en_senses.tsv ~/Library/Rime/lua/
+cp mac/mt/server.py ~/Library/Rime/mt/ && launchctl kickstart -k gui/$(id -u)/local.cn2en-mt
+"/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel" --reload
+```
+
+新旧文件可以混用：只换了 `cn2en.lua` 也能跑（没有词频表就按「切出的词越少越好」分词，旧版服务不返回把握分就跳过这一项检查）。
+
 ## 测试清单
 
 | 输入 | 首选候选 | 应看到的英文 |
@@ -107,11 +130,20 @@ curl -s "http://127.0.0.1:18085/t?q=%E4%BD%A0%E5%A5%BD"   # 应返回 Hello.
 
 整句译文来自模型，组句结果随词库版本可能略有不同。
 
+不开输入法也能在终端里测（需要 Lua：`brew install lua`）：
+
+```sh
+lua tools/test_cn2en.lua tools/test_cases.txt --no-mt --check   # 词表与逐词对照的回归测试，全部通过则无输出
+lua tools/test_cn2en.lua tools/test_cases_mt.txt                # 整句翻译抽查（翻译服务需在运行）
+```
+
+`test_cases.txt` 收了 80 多条以前实际出现过的错配（「奶奶 breasts」「很好吃 devastating · eat」「研究生命 graduate student · life」等）；`test_cases_mt.txt` 是长短不同、日常/工作/学习各种语境的句子，用来看模型译文和核对结果是否合理。
+
 ## 文件说明
 
 | 路径 | 作用 |
 |---|---|
-| `mac/lua/cn2en.lua` | Rime Lua 过滤器：查词表、整句请求本机翻译、半句逐词对照 |
+| `mac/lua/cn2en.lua` | Rime Lua 过滤器：查词表、整句请求本机翻译并核对、半句按词频分词逐词对照 |
 | `mac/rime_ice.custom.yaml` | 雾凇拼音补丁：挂载过滤器、万象语法模型、邻键纠错（不改原方案文件） |
 | `mac/squirrel.custom.yaml` | 鼠须管外观：英文 20 号暖黄、中文 16 号灰色 |
 | `mac/default.custom.yaml` | 方案菜单只保留雾凇拼音 |
@@ -120,22 +152,42 @@ curl -s "http://127.0.0.1:18085/t?q=%E4%BD%A0%E5%A5%BD"   # 应返回 Hello.
 | `data/cn2en.tsv` | 中文 → 英文词表（约 13.2 万条） |
 | `data/overrides.tsv` | 手工校正表，优先级最高 |
 | `data/cn2en_ecdict_reverse.tsv` | ECDICT 反查表，CC-CEDICT 未收录时的回退 |
+| `data/cn2en_freq.tsv` | 词频（来自 jieba），逐词对照时分词用 |
+| `data/cn2en_senses.tsv` | 常用词的更多英文说法（ECDICT 反查），只用于核对整句译文 |
 | `tools/build_cn2en.py` | 生成 `cn2en.tsv` |
+| `tools/apply_overrides.py` | 只把 `overrides.tsv` 合并进现成的 `cn2en.tsv`，不用下载数据源 |
+| `tools/build_freq.py` | 生成 `cn2en_freq.tsv` |
+| `tools/build_senses.py` | 生成 `cn2en_senses.tsv` |
 | `tools/build_ecdict_reverse.py` | 生成 `cn2en_ecdict_reverse.tsv` |
 | `tools/convert_model.sh` | 下载并转换 OPUS-MT 模型 |
+| `tools/test_cn2en.lua` | 在终端里模拟候选菜单测试 `cn2en.lua` |
+| `tools/test_cases.txt`、`tools/test_cases_mt.txt` | 回归测试用例、整句翻译抽查用例 |
 
 ## 自己修正翻译
 
-发现某个词翻得不准，在 `data/overrides.tsv` 里加一行 `中文<TAB>英文`，然后重新生成词表：
+发现某个词翻得不准，在 `data/overrides.tsv` 里加一行 `中文<TAB>英文`（英文写 `-` 表示删掉这个词），然后合并进词表：
 
 ```sh
-# 准备数据源（CC-CEDICT 与 ECDICT）
+python3 tools/apply_overrides.py data/cn2en.tsv data/overrides.tsv
+cp data/cn2en.tsv ~/Library/Rime/lua/
+"/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel" --reload
+```
+
+英文的第一个释义会用在逐词对照里，所以把最常用、放进句子里最自然的那个写在前面（如 `就	just, then`）。
+
+想从数据源完整重新生成（例如 CC-CEDICT 更新了）：
+
+```sh
+# 准备数据源（CC-CEDICT、ECDICT、jieba 词频）
 curl -L -o /tmp/cedict.zip https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.zip && unzip -o /tmp/cedict.zip -d /tmp
 curl -L -o /tmp/ecdict.csv https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv
+curl -L -o /tmp/jieba_dict.txt https://raw.githubusercontent.com/fxsjy/jieba/master/jieba/dict.txt
 
 python3 tools/build_cn2en.py /tmp/cedict_ts.u8 /tmp/ecdict.csv \
   data/cn2en_ecdict_reverse.tsv data/cn2en.tsv data/overrides.tsv
-cp data/cn2en.tsv ~/Library/Rime/lua/
+python3 tools/build_freq.py /tmp/jieba_dict.txt data/cn2en.tsv data/overrides.tsv data/cn2en_freq.tsv
+python3 tools/build_senses.py /tmp/ecdict.csv data/cn2en_freq.tsv data/cn2en_senses.tsv
+cp data/cn2en.tsv data/cn2en_freq.tsv data/cn2en_senses.tsv ~/Library/Rime/lua/
 "/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel" --reload
 ```
 
@@ -146,8 +198,9 @@ cp data/cn2en.tsv ~/Library/Rime/lua/
 ## 已知局限
 
 - 英文在候选词右侧，不在正上方（见上节）。
-- 词表对多义词只取 1–2 个最常用的英文，具体语境下可能不是最合适的那个。
-- 本地小模型整句翻译偶尔会漏意思，例如「我今天想吃苹果 → I want apples today.」漏掉了「吃」。
+- 词表对多义词只取 1–2 个最常用的英文，具体语境下可能不是最合适的那个；逐词对照只对量词、代词、「对/给/到」和方位词做了语境处理。
+- 本地小模型整句翻译偶尔会漏意思。核对只拦得住「大部分实词都对不上」的译文，漏掉一两个词的拦不住，例如「我今天想吃苹果 → I want apples today.」漏掉了「吃」仍会显示；意思反了但用词对得上的也拦不住（「我想你 → I want you.」）。
+- 核对的阈值（覆盖 40%、把握 −1.5）是按模拟的好/坏译文定的，还没在真机模型上大量校准；如果发现正确的整句被换成了逐词对照，可以把 `cn2en.lua` 里的 `MT_MIN_COVERAGE` 调低、`MT_MIN_SCORE` 调得更负。
 - 逐词对照只是词的拼接，不是通顺的英文句子。
 - 翻译服务常驻后台，约占 200–300MB 内存。
 - 邻键纠错只纠正单个字母。

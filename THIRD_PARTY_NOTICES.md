@@ -11,4 +11,4 @@
 | [CTranslate2](https://github.com/OpenNMT/CTranslate2) | 模型推理 | MIT |
 | [SentencePiece](https://github.com/google/sentencepiece) | 分词 | Apache-2.0 |
 
-数据来源（CC-CEDICT、ECDICT）的许可见 [data/LICENSE.md](data/LICENSE.md)。
+数据来源（CC-CEDICT、ECDICT、jieba 词频）的许可见 [data/LICENSE.md](data/LICENSE.md)。

@@ -5,6 +5,8 @@
 | `cn2en.tsv` | 由 CC-CEDICT 生成，并结合 ECDICT 词频排序、ECDICT 反查回退、`overrides.tsv` 手工校正 | **CC BY-SA 4.0** |
 | `overrides.tsv` | 手工校正表 | CC BY-SA 4.0（随 `cn2en.tsv` 一同发布） |
 | `cn2en_ecdict_reverse.tsv` | 由 ECDICT 英→中释义反向整理（`tools/build_ecdict_reverse.py`） | MIT（见下方 ECDICT 许可） |
+| `cn2en_freq.tsv` | `cn2en.tsv` 词条的词频，取自 jieba 词典（`tools/build_freq.py`） | MIT（见下方 jieba 许可） |
+| `cn2en_senses.tsv` | 常用词的更多英文说法，由 ECDICT 英→中释义反向整理（`tools/build_senses.py`），只用于核对整句译文 | MIT（见下方 ECDICT 许可） |
 
 ## CC-CEDICT
 
@@ -40,4 +42,31 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+## jieba
+
+`cn2en_freq.tsv` 的词频来自 [jieba](https://github.com/fxsjy/jieba) 的 `dict.txt`：
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2013 Sun Junyi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
