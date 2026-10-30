@@ -1,10 +1,22 @@
 # rime_ice.custom.yaml — 雾凇拼音补丁（不改原方案文件）
 patch:
-  # 万象简体语法模型（参数取自 RIME-LMDG 仓库对白霜/雾凇系词库的评测配置）
+  # 万象简体语法模型，参数用 RIME-LMDG 作者在 22 万句语料上调出的推荐值。
+  # 实测（tools/ime_bench，199 句日常/工作/学习句子整句打完看首选）：
+  #   v1.0 的参数（只设 non_collocation_penalty: -4）+ 邻键纠错：整句正确 60%
+  #   推荐参数 + 关闭邻键纠错：整句正确 92%
   grammar/language: wanxiang-lts-zh-hans
-  grammar/non_collocation_penalty: -4
-  # 键盘邻键纠错（librime 内置）：只纠正按到相邻键的单个字母，纠错候选大幅降权，拼对时不影响
-  translator/enable_correction: true
+  grammar/collocation_max_length: 6
+  grammar/collocation_min_length: 2
+  grammar/collocation_penalty: -14
+  grammar/non_collocation_penalty: -6
+  grammar/weak_collocation_penalty: -100
+  grammar/rear_penalty: -18
+  translator/contextual_suggestions: false
+  translator/max_homophones: 8
+  # 键盘邻键纠错（librime 内置）关闭：开着时，拼音完全打对也常被「纠」成别的字
+  # （laoshi 老师 → laoshu 老鼠，guan 管 → huan 还），整句正确率从 92% 掉到 74%。
+  # 雾凇自带的字母顺序纠错（如 ign → ing）不受影响。
+  translator/enable_correction: false
   # 中译英：候选旁显示英文释义；首选整句走本机翻译服务
   engine/filters/+:
     - lua_filter@*cn2en

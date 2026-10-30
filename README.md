@@ -1,9 +1,10 @@
 # 打中文，顺便背单词
 
-**type-chinese-learn-english** · 一个 macOS 输入法：打中文时，每个候选词旁边都显示英文。
+**type-chinese-learn-english** · 一个 macOS 中文输入法：平时怎么打中文就怎么打，每个候选词旁边自动显示英文，打字的同时顺便学英语。
 
-基于 Rime 输入法（鼠须管 + 雾凇拼音），**全部在本机运行，不联网上传任何输入内容**。当前版本 **v1.2**，改动见 [CHANGELOG.md](CHANGELOG.md)。
+基于 Rime 输入法（鼠须管 + 雾凇拼音 + 万象语法模型），**全部在本机运行，不联网上传任何输入内容**。一行命令装好，一条命令更新。当前版本 **v1.3**，改动见 [CHANGELOG.md](CHANGELOG.md)。
 
+- **打字准**：整句拼音一口气打完，首选就是对的。实测 199 句日常、工作、学习用语，整句完全正确 92%，逐字正确 98.7%。
 - **词**：查本地词表（13 万条，最常用的 3000 多个字词逐个人工核对过），例如「质量 quality」「握紧 clench」。
 - **整句**：首选候选交给本机翻译模型，例如「明天下午三点开会 We'll meet tomorrow at 3:00 p.m.」；模型没把握时改用逐词对照。
 - **半句**：逐词对照，不让模型“脑补”，例如「我今天下午 I · today · afternoon」「帮我拿一下快递 help · me · take · a bit · express delivery」。
@@ -12,7 +13,7 @@
 | 整句：首选交给本机模型翻译 | 半句：逐词对照，不让模型脑补 |
 |---|---|
 | ![整句翻译](docs/sentence.png) | ![半句逐词对照](docs/partial.png) |
-| 输入时把 `xiang` 打成了 `xisng`（a、s 相邻），邻键纠错照样给出「想」 | 「我今天下午」显示 I · today · afternoon，而不是模型编出的 "I'm going to be here this afternoon." |
+| 首选整句显示通顺的英文译文（截图来自 v1.0，当时开着邻键纠错，所以打错的 `xisng` 也出了「想」；v1.3 起默认关闭，原因见更新记录） | 「我今天下午」显示 I · today · afternoon，而不是模型编出的 "I'm going to be here this afternoon." |
 
 ## 安装：一行命令
 
@@ -141,6 +142,18 @@ lua tools/test_cn2en.lua tools/test_cases_mt.txt                # 整句抽查�
 - `test_cases.txt` 收了 80 多条以前实际出现过的错配，例如「奶奶 breasts」「很好吃 devastating · eat」「研究生命 graduate student · life」。
 - `test_cases_mt.txt` 是 200 多句长短、语境各不相同的句子。GitHub Actions（`.github/workflows/model.yml`）每次改动都会用真模型跑一遍，日志里有原始译文、把握分和输入法最终显示的内容。
 
+**整句组词评测**（`tools/ime_bench/`）：把 `corpus.tsv` 里 199 句的拼音整句打进真实的 Rime（雾凇拼音 + 本仓库配置 + 万象语法模型），统计首选候选完全正确的比例。改语法模型参数、纠错等设置前后各跑一次。需要 Linux 上的 librime 和插件（`apt install librime-dev librime-plugin-lua librime-plugin-octagram`）：
+
+```bash
+tools/ime_bench/run.sh <雾凇拼音目录> <wanxiang-lts-zh-hans.gram>
+```
+
+| 配置 | 整句完全正确 | 逐字正确 |
+|---|---|---|
+| v1.0–v1.2：只设一个语法参数，开邻键纠错 | 60.3% | 90.3% |
+| 不用语法模型，关邻键纠错 | 87.9% | 97.1% |
+| v1.3：推荐语法参数，关邻键纠错 | **92.0%** | **98.7%** |
+
 ### 修正词表（提交给所有人）
 
 `cn2en fix` 只改你自己的电脑。想让修正进入公共词表，在 `data/overrides.tsv` 里加一行 `中文<TAB>英文`，英文写 `-` 表示删掉这个词，然后合并：
@@ -184,7 +197,7 @@ git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git && t
 ### 发布新版本
 
 1. 修改 `VERSION`，在 `CHANGELOG.md` 顶部加一节 `## vX.Y.Z — 标题`。
-2. 合并到 `main`。用户运行 `cn2en update` 时，会看到这一节的标题和小标题。
+2. 合并到 `main`。`.github/workflows/release.yml` 会自动发布 Release `vX.Y.Z`，说明取自这一节；用户运行 `cn2en update` 时也会看到这一节的标题和小标题。
 
 翻译模型只在 `tools/convert_model.sh` 变化时才需要重新发布：把工作流里的 `MODEL_TAG` 改成新的标签，同时修改 `bin/cn2en` 里的 `MODEL_URL`。
 
@@ -196,7 +209,7 @@ git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git && t
 | `bin/cn2en` | 安装、更新、状态检查、修词、开关翻译服务、卸载 |
 | `VERSION`、`CHANGELOG.md` | 版本号与更新记录（`cn2en update` 读取） |
 | `mac/lua/cn2en.lua` | Rime Lua 过滤器：查词表、整句请求本机翻译并检查、半句按词频分词逐词对照、开关 |
-| `mac/rime_ice.custom.yaml` | 雾凇拼音补丁：挂载过滤器、语法模型、邻键纠错、开关与快捷键 |
+| `mac/rime_ice.custom.yaml` | 雾凇拼音补丁：挂载过滤器、语法模型参数、开关与快捷键 |
 | `mac/default.custom.yaml` | 方案菜单只保留雾凇拼音；记住英文开关 |
 | `mac/squirrel.custom.yaml` | 鼠须管外观：英文 20 号暖黄、中文 16 号灰色 |
 | `mac/cn2en_user.tsv.template` | 个人词表模板 |
@@ -210,6 +223,8 @@ git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git && t
 | `tools/build_cn2en.py`、`tools/build_freq.py`、`tools/build_ecdict_reverse.py` | 从数据源生成词表、词频、反查表 |
 | `tools/convert_model.sh` | 把 OPUS-MT 转成 CTranslate2 int8（Actions 用它发布模型；下载不了时安装程序在本机用它） |
 | `tools/test_cn2en.lua`、`tools/test_cases*.txt` | 测试脚本与用例 |
+| `tools/ime_bench/` | 整句组词评测：最小 Rime 控制台、评测脚本、199 句拼音语料 |
+| `.github/workflows/release.yml` | `VERSION` 变化合并到 main 后，自动发布对应的 Release |
 | `.github/workflows/model.yml` | 转换并发布翻译模型，用真模型抽查整句 |
 
 ## 外观
@@ -226,7 +241,8 @@ git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git && t
 - 本地小模型偶尔会译错意思但用词通顺，把握分也不低，这类拦不住，例如「我每天背二十个单词 → I'm carrying 20 words every day.」。打字到一半的半句也可能被译成别扭的整句，例如「你明天早上 → You'll be in the morning.」。
 - 逐词对照只是词的拼接，不是通顺的英文句子。
 - 翻译服务常驻后台，约占 200–300MB 内存（`cn2en mt off` 可关）。
-- 邻键纠错只纠正单个字母。
+- 邻键纠错（按偏到相邻键的字母也能打出对的字）默认关闭：开着会把拼对的拼音也「纠」错，整句正确率从 92% 掉到 74%。拼音打错了需要自己改。
+- 整句组词偶尔仍会选错，多是光看拼音分不清的，如「的/得」「他/她」「吗/嘛」「一部/一步」。选对一次后，雾凇会记住你的选择。
 
 ## 许可
 
