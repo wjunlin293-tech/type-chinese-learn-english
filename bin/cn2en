@@ -104,23 +104,81 @@ set_choice() {
   mv "$STATE/choices.tmp" "$STATE/choices"
 }
 
-# 装一个配置文件：你没改过（和上次装的原件一样）就直接换新；改过就保留你的，新版另存为 .new
+# 备份 ~/Library/Rime。跳过能重新下载或生成的大文件：翻译服务（mt/）、语法模型（*.gram）、
+# 部署缓存（build/），省下约 1GB；恢复备份后重新运行安装命令即可补回
+backup_rime() {
+  local bak=$1 e
+  mkdir -p "$bak" || return 1
+  for e in "$RIME"/* "$RIME"/.[!.]*; do
+    [ -e "$e" ] || continue
+    case $(basename "$e") in mt|build|cn2en|*.gram|*.part) continue ;; esac
+    cp -R "$e" "$bak/" || return 1
+  done
+}
+
+# v1.0 是手动装的：用户在仓库 data/overrides.tsv 里加的修正，搬进不会被更新覆盖的个人词表。
+# 「用户加的」= 不在旧版发布过的条目里、也不在当前公共校正表里的条目，不依赖 git
+migrate_legacy_fixes() {
+  local dir=${CN2EN_LEGACY_DIR:-$HOME/type-chinese-learn-english} n tmp
+  [ -f "$STATE/legacy_migrated" ] && return 0
+  [ -f "$dir/data/overrides.tsv" ] && [ -f "$dir/mac/lua/cn2en.lua" ] || return 0
+  [ "$(cd "$dir" && pwd -P)" = "$APP" ] && return 0   # 从源码安装：这就是程序本身，不是旧版
+  tmp=$(mktemp)
+  awk -F'\t' '
+    function t(x) { gsub(/^[ \t]+|[ \t]+$/, "", x); return x }
+    FILENAME == ARGV[1] || FILENAME == ARGV[2] { if ($0 !~ /^#/ && NF >= 2) known[t($1) "\t" t($2)] = 1; next }
+    FILENAME == ARGV[3] { if ($0 !~ /^#/ && NF >= 2) mine[t($1)] = 1; next }
+    $0 ~ /^#/ || NF < 2 { next }
+    { k = t($1); v = t($2)
+      if (k == "" || v == "" || (k "\t" v) in known || k in mine) next
+      if (!(k in val)) order[++n] = k
+      val[k] = v }
+    END { for (i = 1; i <= n; i++) print order[i] "\t" val[order[i]] }
+  ' "$APP/mac/legacy_overrides.tsv" "$APP/data/overrides.tsv" "$USER_DICT" "$dir/data/overrides.tsv" > "$tmp"
+  n=$(grep -c . "$tmp" || true)
+  if [ "$n" -gt 0 ]; then
+    { echo "# 从旧版 $dir/data/overrides.tsv 自动搬来（$(date +%F)）"; cat "$tmp"; } >> "$USER_DICT"
+    ok "已把你在旧版里加的 $n 条词表修正搬到个人词表（cn2en fixes 查看）"
+    log "搬运旧版修正：$(tr '\n' ' ' < "$tmp")"
+  fi
+  rm -f "$tmp"
+  date +%F > "$STATE/legacy_migrated"
+}
+
+# 这个文件是不是 v1.0 等旧版原样发布的（没被改过）
+is_legacy_conf() {
+  local h; h=$(sha256 "$1")
+  grep -q "^$h  $2\$" "$APP/mac/legacy_configs.sha256" 2>/dev/null
+}
+
+# 装一个配置文件：你没改过（和上次装的、或旧版发布的原件一样）就直接换新；
+# 改过就保留你的，新版另存为 .new。rime_ice.custom.yaml 例外：插件靠它挂载，必须用新版（你的备份为 .bak）
 install_conf() {
   local src=$1 name dst pristine
   name=$(basename "$src"); dst=$RIME/$name; pristine=$STATE/pristine/$name
   mkdir -p "$STATE/pristine"
   if [ ! -f "$dst" ] || cmp -s "$dst" "$src"; then
     cp "$src" "$dst"
-  elif [ -f "$pristine" ] && cmp -s "$src" "$pristine"; then
-    :   # 新版没改这个文件，你的修改原样保留
-  elif [ -f "$pristine" ] && cmp -s "$dst" "$pristine"; then
-    cp "$src" "$dst"
-  elif [ ! -f "$pristine" ]; then
+  elif [ -f "$pristine" ]; then
+    if cmp -s "$src" "$pristine"; then
+      :   # 新版没改这个文件，你的修改原样保留
+    elif cmp -s "$dst" "$pristine"; then
+      cp "$src" "$dst"
+    else
+      cp "$src" "$dst.new"
+      warn "你改过 $name，保留了你的版本；新版本放在 $name.new"
+    fi
+  elif is_legacy_conf "$dst" "$name"; then
+    cp "$src" "$dst"   # 旧版原样的配置，没改过，直接换新
+  elif [ "$name" = rime_ice.custom.yaml ]; then
     cp "$dst" "$dst.bak-$(date +%Y%m%d-%H%M%S)"; cp "$src" "$dst"
-    info "原有的 $name 已备份为 $name.bak-*"
+    warn "$name 里有你自己的改动，新版插件必须用新的这个文件；你的版本已备份为 $name.bak-*，需要的话把改动合并回来"
   else
-    cp "$src" "$dst.new"
-    warn "你改过 $name，保留了你的版本；新版本放在 $name.new"
+    # 第一次用新安装程序、文件是你改过的旧版配置（比如改了颜色）：原样保留
+    if ! is_legacy_conf "$src" "$name"; then
+      cp "$src" "$dst.new"
+      info "你改过 $name，保留了你的版本；新版本放在 $name.new，需要的话对照着合并"
+    fi
   fi
   cp "$src" "$pristine"
 }
@@ -302,11 +360,16 @@ cmd_install() {
   if [ "$mode" = update ]; then   # 更新时沿用上次「不要」的选择
     [ "$(get_choice grammar)" = no ] && want_gram=no
     [ "$(get_choice mt)" = no ] && want_mt=no
+  elif [ -f "$STATE/version" ]; then
+    from_version=$(cat "$STATE/version")              # 已经装过：这次相当于更新
+  elif [ -f "$RIME/lua/cn2en.lua" ]; then
+    from_version=1.0.0                                # v1.0 手动装的
   fi
+  [ "$from_version" = "$VERSION" ] && from_version=
   log "===== cn2en $mode v$VERSION（来自 $APP）"
 
-  if [ "$mode" = update ]; then
-    printf '%s更新「打中文，顺便背单词」到 v%s%s\n' "$B" "$VERSION" "$N"
+  if [ -n "$from_version" ]; then
+    printf '%s更新「打中文，顺便背单词」v%s → v%s%s\n' "$B" "$from_version" "$VERSION" "$N"
   else
     printf '%s安装「打中文，顺便背单词」v%s%s  %s全程自动，大约 5–10 分钟%s\n' "$B" "$VERSION" "$N" "$D" "$N"
   fi
@@ -340,8 +403,9 @@ cmd_install() {
   if [ ! -f "$STATE/backup" ]; then
     if [ -n "$(find "$RIME" -mindepth 1 -maxdepth 1 ! -name cn2en 2>/dev/null | head -1)" ]; then
       bak="$RIME.bak-$(date +%Y%m%d-%H%M%S)"
-      cp -R "$RIME" "$bak" && echo "$bak" > "$STATE/backup"
-      ok "你原来的输入法配置已备份到 $bak"
+      backup_rime "$bak" || die "备份 $RIME 失败" "磁盘空间可能不够；什么都还没改动，腾出空间后重新运行即可。"
+      echo "$bak" > "$STATE/backup"
+      ok "你原来的输入法配置（含打字记录）已备份到 $bak"
     else
       echo none > "$STATE/backup"
     fi
@@ -367,6 +431,7 @@ cmd_install() {
   else grep -v '^  grammar/' "$APP/mac/rime_ice.custom.yaml" > "$tmpc/rime_ice.custom.yaml"; fi
   install_conf "$tmpc/rime_ice.custom.yaml"; rm -rf "$tmpc"
   [ -f "$USER_DICT" ] || cp "$APP/mac/cn2en_user.tsv.template" "$USER_DICT"
+  migrate_legacy_fixes
   ok "已安装（词表 $(wc -l < "$APP/data/cn2en.tsv" | tr -d ' ') 条）"
   case $result_gram in ✓) ok "万象语法模型" ;; ✗*) warn "万象语法模型：${result_gram#✗ }" ;; esac
 
@@ -403,7 +468,7 @@ cmd_install() {
   reload_rime
 
   # ---- 总结 ----
-  if [ "$mode" = update ]; then
+  if [ -n "$from_version" ]; then
     show_changes "$from_version"
     printf '\n%s已更新到 v%s。%s\n' "$G" "$VERSION" "$N"
   else
@@ -414,7 +479,7 @@ cmd_install() {
     printf '\n%s还差一步：%s系统没有自动启用鼠须管，请在「系统设置 → 键盘 → 文字输入 → 编辑…」里点 + 添加「简体中文 → 鼠须管」\n' "$Y" "$N"
     open "x-apple.systempreferences:com.apple.Keyboard-Settings.extension" >/dev/null 2>&1 || true
   fi
-  [ "$mode" = install ] && usage_tips
+  [ -z "$from_version" ] && usage_tips
   log "完成"
 }
 
@@ -597,7 +662,7 @@ cmd_uninstall() {
     sudo rm -rf "$SQUIRREL_APP" && { sudo pkgutil --forget im.rime.inputmethod.Squirrel >> "$LOG" 2>&1 || true; }
     rm -rf "$RIME"
     ok "已删除鼠须管和 $RIME（输入法菜单里的图标注销一次后消失）"
-    [ -n "$backup" ] && [ -d "$backup" ] && info "安装前的备份还在：$backup（mv \"$backup\" \"$RIME\" 可恢复）"
+    [ -n "$backup" ] && [ -d "$backup" ] && info "安装前的备份还在：$backup（mv \"$backup\" \"$RIME\" 可恢复；备份里不含语法模型，需要的话重新运行安装命令补回）"
   else
     reload_rime
   fi

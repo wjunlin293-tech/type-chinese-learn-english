@@ -1,0 +1,6 @@
+# v1.0 及更早版本发布过的配置文件原样（sha256），安装程序据此判断你的配置是不是没改过的旧版
+# 由 git 历史生成：git show <提交>:mac/<文件> | shasum -a 256
+17a5aefce5813317959074e4722815c26f08fbb745cdb1625d5f35edef5920e1  default.custom.yaml
+06eb8bc5d18f15e9579dc99582b559911867ab663bdb290983bca75a4d8f5bc1  rime_ice.custom.yaml
+0e0cb94e56d80c20a5bbbd513870bbf59e7fbfa45c150fa62e2e6a11b46c9ec9  squirrel.custom.yaml
+1225a6d5d55d312e3b58dbfb5236715c92d26a0b6e865fa1e1feb4f75366a780  rime_ice.custom.yaml
