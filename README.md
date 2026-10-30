@@ -1,176 +1,235 @@
 # 打中文，顺便背单词
 
-**type-chinese-learn-english** · 一个 macOS 输入法扩展：每个中文候选词旁边都显示英文。
+**type-chinese-learn-english** · 一个 macOS 输入法：打中文时，每个候选词旁边都显示英文。
 
-基于 macOS 上的 Rime 输入法（鼠须管 + 雾凇拼音），**全部本地运行，不联网上传任何输入内容**。
+基于 Rime 输入法（鼠须管 + 雾凇拼音），**全部在本机运行，不联网上传任何输入内容**。当前版本 **v1.2**，改动见 [CHANGELOG.md](CHANGELOG.md)。
 
-- **词**：查本地词表（13 万条），显示 1–2 个常用英文，例如「质量 quality」「握紧 clench」。
-- **整句**：首选候选交给本机翻译模型（OPUS-MT，CTranslate2 int8），例如「明天下午三点开会 We'll meet tomorrow at 3:00 p.m.」。
-- **半句**：逐词对照，不让模型“脑补”，例如「我今天下午 I · today · afternoon」。
-- **纠错**：键盘邻键纠错（按偏到相邻键的单个字母）+ 雾凇自带的字母顺序纠错。
-- **组句**：雾凇拼音 + 万象简体语法模型。
+- **词**：查本地词表（13 万条，最常用的 3000 多个字词逐个人工核对过），例如「质量 quality」「握紧 clench」。
+- **整句**：首选候选交给本机翻译模型，例如「明天下午三点开会 We'll meet tomorrow at 3:00 p.m.」；模型没把握时改用逐词对照。
+- **半句**：逐词对照，不让模型“脑补”，例如「我今天下午 I · today · afternoon」「帮我拿一下快递 help · me · take · a bit · express delivery」。
+- **直接出英文**：按 Ctrl+Shift+回车，上屏的是英文而不是中文。
 
 | 整句：首选交给本机模型翻译 | 半句：逐词对照，不让模型脑补 |
 |---|---|
 | ![整句翻译](docs/sentence.png) | ![半句逐词对照](docs/partial.png) |
 | 输入时把 `xiang` 打成了 `xisng`（a、s 相邻），邻键纠错照样给出「想」 | 「我今天下午」显示 I · today · afternoon，而不是模型编出的 "I'm going to be here this afternoon." |
 
-> 目前只提供 macOS 版。iPhone（仓输入法）版尚未在真机上测试，测试通过后再加入本仓库。
+## 安装：一行命令
+
+1. 打开「终端」（按 ⌘+空格，输入「终端」或 Terminal，回车）。
+2. 复制下面这一行，粘贴到终端里，按回车：
+
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/wjunlin293-tech/type-chinese-learn-english/main/install.sh)"
+   ```
+
+3. 中途会让你输入一次**开机密码**，用来安装输入法。输入时屏幕上不会显示，输完按回车即可。
+4. 等 5–10 分钟，看到「装好了！」就完成了。输入法已经自动切换成鼠须管，打 `pingguo` 试试。
+
+整个过程全自动，不用回答任何问题，也不用事先装 Homebrew、git 或 Python。
+
+**需要：** macOS 13（Ventura）或更新，一个管理员账户，约 2.5GB 空闲磁盘，能访问 GitHub。
+
+**中途断了？** 重新运行同一条命令即可，已经装好的部分会自动跳过。
+
+**更新？** 同一条命令再运行一次就是更新（或者运行 `cn2en update`），会显示这次更新了什么。
+
+**只想要基本功能？** 在命令末尾加参数：`--no-mt` 不装整句翻译（省约 1GB 磁盘、250MB 内存），`--no-grammar` 不下载语法模型（约 400MB）。例如：
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/wjunlin293-tech/type-chinese-learn-english/main/install.sh)" -- --no-mt
+```
+
+安装程序会：
+
+- 第一次安装时备份你原有的 `~/Library/Rime`，包括打字记录和配置。语法模型、翻译模型这些能重新下载的大文件不备份，可省下约 1GB；
+- 安装鼠须管官方安装包（核对 SHA-256）并加入输入法列表；
+- 下载雾凇拼音、万象语法模型；
+- 装好中英词表和插件；
+- 装好本机翻译服务和模型（核对 SHA-256）；
+- 最后列出每一部分是否成功。
+
+所有细节记录在 `~/Library/Logs/cn2en.log`。
+
+### 已经手动装过 v1.0？
+
+直接运行上面那条命令就行，不用先卸载，也不用做别的。它会：
+
+- **认出旧版**，按「从 v1.0 更新」处理，最后显示两个版本的更新内容；
+- **自动搬运你的词表修正**：你在 `~/type-chinese-learn-english/data/overrides.tsv` 里自己加的、改过的条目（不管有没有 `git commit`），都会搬进不会被更新覆盖的个人词表；
+- **保留你改过的外观设置**（如候选框颜色）；没改过的配置文件直接换成新版；
+- **沿用已有的东西**：鼠须管、雾凇拼音、语法模型、翻译模型都不重新下载，打字记录不动；
+- 先备份 `~/Library/Rime`，跳过模型等大文件。
+
+装好后，旧的 `~/type-chinese-learn-english` 就用不到了，可以删掉。以后更新运行 `cn2en update` 即可。
+
+## 怎么用
+
+| 操作 | 作用 |
+|---|---|
+| 正常打字 | 候选旁边显示英文 |
+| **Ctrl+Shift+回车** | 直接输出当前候选的英文 |
+| **Ctrl+Shift+E** | 打字时临时开/关英文 |
+| **F4**（或 Ctrl+`） | 方案选单：「中英 / 纯中」切换是否显示英文，「整句 / 查词」切换首选是否整句翻译；选择会被记住 |
+
+## 管理：cn2en 命令
+
+装好后在终端里可以用 `cn2en` 命令：
+
+| 命令 | 作用 |
+|---|---|
+| `cn2en fix 质量 quality, grade` | 某个词的英文不对，一条命令改掉，立即生效 |
+| `cn2en fix 质量 -` | 不再显示这个词的英文 |
+| `cn2en fix --undo 质量` | 撤销你的修正 |
+| `cn2en fixes` | 列出你的修正（保存在 `~/Library/Rime/cn2en_user.tsv`，更新不会覆盖） |
+| `cn2en update` | 更新到最新版，并显示更新内容；你的修正和改过的外观设置都保留 |
+| `cn2en status` | 逐项检查是否正常，有问题会告诉你怎么修 |
+| `cn2en mt off` / `cn2en mt on` | 关掉/打开本机翻译服务（关掉省约 250MB 内存，首选整句改为逐词对照） |
+| `cn2en uninstall` | 卸载（保留个人修正）；`cn2en uninstall --all` 连鼠须管和雾凇一起删 |
+
+如果终端提示找不到 `cn2en`，关掉终端窗口重新打开一个即可。
+
+## 遇到问题
+
+先运行 `cn2en status`，它会逐项检查并给出修复办法。常见情况：
+
+- **安装时提示「连不上 GitHub」**：检查网络；公司或学校网络可能需要代理，开好代理后重新运行安装命令。
+- **提示需要 macOS 13**：在「系统设置 → 通用 → 软件更新」升级系统后再装。
+- **输入法菜单里没有鼠须管**：先注销再登录一次；还没有的话，在「系统设置 → 键盘 → 文字输入 → 编辑… → +」里添加「简体中文 → 鼠须管」。
+- **整句没有英文，只有逐词对照**：可能是模型对这句没把握（正常现象），也可能是翻译服务没在运行，这时运行 `cn2en mt on`。
+- **安装时弹出「命令行开发者工具」窗口**：这是整句翻译需要的 Python，点「安装」，装好后会自动继续；点「取消」只是不装整句翻译。
+- **想恢复到安装前的样子**：运行 `cn2en uninstall --all`，然后把第一次安装时备份的 `~/Library/Rime.bak-<日期>` 改回 `~/Library/Rime`。备份里不含语法模型，需要的话重新运行安装命令补回。
+
+解决不了的话，把 `~/Library/Logs/cn2en.log` 附在 [Issue](https://github.com/wjunlin293-tech/type-chinese-learn-english/issues) 里。
 
 ## 工作原理
 
 ```
 拼音 ─▶ 雾凇拼音(+万象语法模型) ─▶ 候选 ─▶ cn2en.lua 过滤器 ─▶ 候选 + 英文注释
                                             │
-                     词表命中 ◀── cn2en.tsv ─┤
+            个人词表 / 词表命中 ◀── cn2en_user.tsv、cn2en.tsv
                      首选整句 ──▶ 127.0.0.1:18085 本机翻译服务（超时 0.3 秒即放弃，不卡打字）
-                     其余半句 ──▶ 正向最大匹配，逐词对照
+                              └─▶ 检查译文（长度 / 模型把握），不通过 ─┐
+                     其余半句 ──▶ 按词频分词，逐词对照 ◀──────────────┘
 ```
 
-- 首选候选的模型译文，如果英文词数远多于原文实词数，判定为模型给半句脑补了内容，改用逐词对照。
+- 首选候选的模型译文要过两道检查，不通过就改用逐词对照：
+  - **长度**：英文词数远多于逐词对照的词数，判定为模型给半句脑补了内容；
+  - **把握**：模型给这条译文的平均对数概率低于 −1.0，说明它在硬译、瞎猜，例如「躺平了 → Lie down.」会改显示 lie flat。这个阈值是用真模型跑 150 多句日常/工作/学习/网络用语后定的。
+- 逐词对照按词频算整句概率最大的切法（「研究/生命」而不是「研究生/命」，「很/好吃」而不是「很好/吃」），并处理常见搭配：
+  - 量词：数词、指示词后的量词不翻译（「三本书 three · book」「这道菜 this · dish」）；
+  - 代词：动词、介词后用宾格（「帮我 help · me」），后面跟「的」用所有格（「我的电脑 my · computer」「这是我的 … mine」）；
+  - 介词与方位词：「他对我很好 he · to · me」「发给我 send to · me」「我马上到 … arrive」「市场上 market · on」。
 - 语气词（了、吗、呢、吧……）：首选候选带语气词时 2 个字起就整句翻译（「下雨了 It's raining.」）；逐词对照时跳过语气词，句末是「吗 / 呢」则补问号（「饿了吗 hungry?」）。
 - 一页候选打包成一次请求；词表只在启动时加载一次；译文两级缓存（Lua 侧 + 服务侧）。
-- 实测（Apple M1）：一页 5 个候选整批翻译 70–100ms，缓存命中约 10ms。
+- 实测（Apple M1，v1.0）：一页 5 个候选整批翻译 70–100ms，缓存命中约 10ms。v1.1 起，服务对每条新译文多做一次打分（只过一遍模型，不逐词生成），耗时会略增，尚未在 M1 上重新实测。如果首选整句经常显示不出来，可以把 `cn2en.lua` 里的 `MT_TIMEOUT` 调大一点。
 
-## 安装（macOS）
+## 开发者
 
-需要 [Homebrew](https://brew.sh)、Python 3。以下命令都在终端里执行。
+### 测试
 
-### 1. 安装鼠须管
-
-```sh
-brew install --cask squirrel   # 会要求输入开机密码
+```bash
+lua tools/test_cn2en.lua tools/test_cases.txt --no-mt --check   # 词表与逐词对照的回归测试，全部通过则无输出
 ```
 
-然后在「系统设置 → 键盘 → 文字输入 → 输入法 → 编辑… → +」里添加「简体中文 → 鼠须管」。
-
-### 2. 备份并放入雾凇拼音
-
-```sh
-[ -d ~/Library/Rime ] && cp -R ~/Library/Rime ~/Library/Rime.bak-$(date +%Y%m%d-%H%M)
-git clone --depth 1 https://github.com/iDvel/rime-ice.git /tmp/rime-ice
-rsync -a --ignore-existing --exclude .git --exclude .github --exclude others --exclude build \
-  /tmp/rime-ice/ ~/Library/Rime/
+```bash
+lua tools/test_cn2en.lua tools/test_cases_mt.txt                # 整句抽查（需要翻译服务在运行）
 ```
 
-### 3. 放入本仓库的配置和词表
+需要 Lua：`brew install lua`。
 
-```sh
-git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git ~/type-chinese-learn-english
-cd ~/type-chinese-learn-english
-mkdir -p ~/Library/Rime/lua
-cp mac/default.custom.yaml mac/rime_ice.custom.yaml mac/squirrel.custom.yaml ~/Library/Rime/
-cp mac/lua/cn2en.lua data/cn2en.tsv ~/Library/Rime/lua/
+- `test_cases.txt` 收了 80 多条以前实际出现过的错配，例如「奶奶 breasts」「很好吃 devastating · eat」「研究生命 graduate student · life」。
+- `test_cases_mt.txt` 是 200 多句长短、语境各不相同的句子。GitHub Actions（`.github/workflows/model.yml`）每次改动都会用真模型跑一遍，日志里有原始译文、把握分和输入法最终显示的内容。
+
+### 修正词表（提交给所有人）
+
+`cn2en fix` 只改你自己的电脑。想让修正进入公共词表，在 `data/overrides.tsv` 里加一行 `中文<TAB>英文`，英文写 `-` 表示删掉这个词，然后合并：
+
+```bash
+python3 tools/apply_overrides.py data/cn2en.tsv data/overrides.tsv
 ```
 
-### 4. 下载万象语法模型（约 400MB，可选但强烈建议）
+英文的第一个释义会用在逐词对照里，所以把放进句子里最自然的那个写在前面（如 `就	just, then`）。
 
-```sh
-curl -L -o ~/Library/Rime/wanxiang-lts-zh-hans.gram \
-  https://github.com/amzxyz/RIME-LMDG/releases/download/LTS/wanxiang-lts-zh-hans.gram
+想从数据源完整重新生成（例如 CC-CEDICT 更新了），依次运行：
+
+```bash
+curl -L -o /tmp/cedict.zip https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.zip && unzip -o /tmp/cedict.zip -d /tmp
 ```
 
-不装也能用，只是整句组词会差一些；此时请把 `rime_ice.custom.yaml` 里 `grammar/` 开头的两行删掉。
-
-### 5. 安装本机翻译服务（可选，用于整句翻译）
-
-```sh
-mkdir -p ~/Library/Rime/mt
-cp mac/mt/server.py ~/Library/Rime/mt/
-python3 -m venv ~/Library/Rime/mt/venv
-~/Library/Rime/mt/venv/bin/pip install ctranslate2 sentencepiece
-./tools/convert_model.sh            # 下载并转换模型（临时占用约 1GB，转完自动清理），输出到 ~/Library/Rime/mt/model
-sed "s#__HOME__#$HOME#g" mac/mt/local.cn2en-mt.plist.template > ~/Library/LaunchAgents/local.cn2en-mt.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.cn2en-mt.plist
-curl -s "http://127.0.0.1:18085/t?q=%E4%BD%A0%E5%A5%BD"   # 应返回 Hello.
+```bash
+curl -L -o /tmp/ecdict.csv https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv
 ```
 
-不装这一步，词和半句照常显示英文，只是首选整句没有通顺译文。
-
-### 6. 部署
-
-```sh
-"/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel" --reload
+```bash
+curl -L -o /tmp/jieba_dict.txt https://raw.githubusercontent.com/fxsjy/jieba/master/jieba/dict.txt
 ```
 
-或在菜单栏鼠须管图标里点「重新部署」。
+```bash
+python3 tools/build_cn2en.py /tmp/cedict_ts.u8 /tmp/ecdict.csv data/cn2en_ecdict_reverse.tsv data/cn2en.tsv data/overrides.tsv
+```
 
-## 测试清单
+```bash
+python3 tools/build_freq.py /tmp/jieba_dict.txt data/cn2en.tsv data/overrides.tsv data/cn2en_freq.tsv
+```
 
-| 输入 | 首选候选 | 应看到的英文 |
-|---|---|---|
-| `pingguo` | 苹果 | apple |
-| `zhiliang` | 质量 | quality |
-| `wojintianxiawu` | 我今天下午 | I · today · afternoon |
-| `mingtianxiawusandiankaihui` | 明天下午三点开会 | We'll meet tomorrow at 3:00 p.m. |
-| `xuexiyingyuhenzhongyao` | 学习英语很重要 | Learning English is important. |
+### 从源码安装
 
-整句译文来自模型，组句结果随词库版本可能略有不同。
+```bash
+git clone https://github.com/wjunlin293-tech/type-chinese-learn-english.git && type-chinese-learn-english/bin/cn2en install
+```
 
-## 文件说明
+这样装的话，`cn2en` 命令指向这个克隆。改完代码再运行一次 `bin/cn2en install` 就会同步到输入法。
+
+### 发布新版本
+
+1. 修改 `VERSION`，在 `CHANGELOG.md` 顶部加一节 `## vX.Y.Z — 标题`。
+2. 合并到 `main`。用户运行 `cn2en update` 时，会看到这一节的标题和小标题。
+
+翻译模型只在 `tools/convert_model.sh` 变化时才需要重新发布：把工作流里的 `MODEL_TAG` 改成新的标签，同时修改 `bin/cn2en` 里的 `MODEL_URL`。
+
+### 文件说明
 
 | 路径 | 作用 |
 |---|---|
-| `mac/lua/cn2en.lua` | Rime Lua 过滤器：查词表、整句请求本机翻译、半句逐词对照 |
-| `mac/rime_ice.custom.yaml` | 雾凇拼音补丁：挂载过滤器、万象语法模型、邻键纠错（不改原方案文件） |
+| `install.sh` | 一行安装的入口：下载程序到 `~/Library/Application Support/cn2en`，然后运行 `cn2en install` |
+| `bin/cn2en` | 安装、更新、状态检查、修词、开关翻译服务、卸载 |
+| `VERSION`、`CHANGELOG.md` | 版本号与更新记录（`cn2en update` 读取） |
+| `mac/lua/cn2en.lua` | Rime Lua 过滤器：查词表、整句请求本机翻译并检查、半句按词频分词逐词对照、开关 |
+| `mac/rime_ice.custom.yaml` | 雾凇拼音补丁：挂载过滤器、语法模型、邻键纠错、开关与快捷键 |
+| `mac/default.custom.yaml` | 方案菜单只保留雾凇拼音；记住英文开关 |
 | `mac/squirrel.custom.yaml` | 鼠须管外观：英文 20 号暖黄、中文 16 号灰色 |
-| `mac/default.custom.yaml` | 方案菜单只保留雾凇拼音 |
+| `mac/cn2en_user.tsv.template` | 个人词表模板 |
 | `mac/mt/server.py` | 本机翻译服务，只监听 127.0.0.1，不记录任何输入 |
 | `mac/mt/local.cn2en-mt.plist.template` | 开机自启（LaunchAgent）模板 |
 | `data/cn2en.tsv` | 中文 → 英文词表（约 13.2 万条） |
 | `data/overrides.tsv` | 手工校正表，优先级最高 |
+| `data/cn2en_freq.tsv` | 词频（来自 jieba），逐词对照时分词用 |
 | `data/cn2en_ecdict_reverse.tsv` | ECDICT 反查表，CC-CEDICT 未收录时的回退 |
-| `tools/build_cn2en.py` | 生成 `cn2en.tsv` |
-| `tools/build_ecdict_reverse.py` | 生成 `cn2en_ecdict_reverse.tsv` |
-| `tools/convert_model.sh` | 下载并转换 OPUS-MT 模型 |
-
-## 自己修正翻译
-
-发现某个词翻得不准，在 `data/overrides.tsv` 里加一行 `中文<TAB>英文`，然后重新生成词表：
-
-```sh
-# 准备数据源（CC-CEDICT 与 ECDICT）
-curl -L -o /tmp/cedict.zip https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.zip && unzip -o /tmp/cedict.zip -d /tmp
-curl -L -o /tmp/ecdict.csv https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.csv
-
-python3 tools/build_cn2en.py /tmp/cedict_ts.u8 /tmp/ecdict.csv \
-  data/cn2en_ecdict_reverse.tsv data/cn2en.tsv data/overrides.tsv
-cp data/cn2en.tsv ~/Library/Rime/lua/
-"/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel" --reload
-```
+| `tools/apply_overrides.py` | 把 `overrides.tsv` 合并进 `cn2en.tsv` |
+| `tools/build_cn2en.py`、`tools/build_freq.py`、`tools/build_ecdict_reverse.py` | 从数据源生成词表、词频、反查表 |
+| `tools/convert_model.sh` | 把 OPUS-MT 转成 CTranslate2 int8（Actions 用它发布模型；下载不了时安装程序在本机用它） |
+| `tools/test_cn2en.lua`、`tools/test_cases*.txt` | 测试脚本与用例 |
+| `.github/workflows/model.yml` | 转换并发布翻译模型，用真模型抽查整句 |
 
 ## 外观
 
-鼠须管 1.1.2 的候选框不支持把注释画在候选词**上方**：在 `candidate_format` 里插入换行会导致面板高度计算错误、内容跳到最后一行。所以英文显示在中文**右侧**，用更大的字号和更醒目的颜色区分。颜色在 `mac/squirrel.custom.yaml` 里改（格式为 `0xBBGGRR`）。
+鼠须管 1.1.2 的候选框不支持把注释画在候选词**上方**：在 `candidate_format` 里插入换行，会导致面板高度计算错误、内容跳到最后一行。所以英文显示在中文**右侧**，用更大的字号和更醒目的颜色区分。
+
+颜色在 `~/Library/Rime/squirrel.custom.yaml` 里改（格式为 `0xBBGGRR`），改完运行 `cn2en reload`。你改过的这个文件在更新时会保留。
 
 ## 已知局限
 
+- 目前只有 macOS 版。iPhone（仓输入法）版尚未在真机上测试，测试通过后再加入本仓库。
 - 英文在候选词右侧，不在正上方（见上节）。
-- 词表对多义词只取 1–2 个最常用的英文，具体语境下可能不是最合适的那个。
-- 本地小模型整句翻译偶尔会漏意思，例如「我今天想吃苹果 → I want apples today.」漏掉了「吃」。
+- 词表对多义词只取 1–2 个最常用的英文，具体语境下可能不是最合适的那个；逐词对照只对量词、代词、「对/给/到」和方位词做了语境处理。
+- 本地小模型偶尔会译错意思但用词通顺，把握分也不低，这类拦不住，例如「我每天背二十个单词 → I'm carrying 20 words every day.」。打字到一半的半句也可能被译成别扭的整句，例如「你明天早上 → You'll be in the morning.」。
 - 逐词对照只是词的拼接，不是通顺的英文句子。
-- 翻译服务常驻后台，约占 200–300MB 内存。
+- 翻译服务常驻后台，约占 200–300MB 内存（`cn2en mt off` 可关）。
 - 邻键纠错只纠正单个字母。
-
-## 卸载
-
-按需要选择程度：
-
-```sh
-# 只关掉英文显示：删掉 rime_ice.custom.yaml 中 engine/filters/+ 那两行，然后重新部署
-
-# 去掉本机翻译服务
-launchctl bootout gui/$(id -u)/local.cn2en-mt
-rm ~/Library/LaunchAgents/local.cn2en-mt.plist
-rm -rf ~/Library/Rime/mt
-
-# 彻底删除鼠须管及全部配置（先在「系统设置 → 键盘 → 输入法」里移除鼠须管）
-brew uninstall --cask squirrel
-rm -rf ~/Library/Rime        # 如有备份：mv ~/Library/Rime.bak-<日期> ~/Library/Rime
-```
 
 ## 许可
 
-- 代码与配置（`mac/`、`tools/`）：[MIT](LICENSE)
-- 词表数据（`data/cn2en.tsv`、`data/overrides.tsv`）：CC BY-SA 4.0，衍生自 CC-CEDICT；ECDICT 部分为 MIT。详见 [data/LICENSE.md](data/LICENSE.md)
-- 引用的第三方组件：见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- 代码与配置（`bin/`、`mac/`、`tools/`、`install.sh`）：[MIT](LICENSE)
+- 词表数据（`data/cn2en.tsv`、`data/overrides.tsv`）：CC BY-SA 4.0，衍生自 CC-CEDICT；ECDICT、jieba 部分为 MIT。详见 [data/LICENSE.md](data/LICENSE.md)
+- 引用的第三方组件：见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。安装时下载的翻译模型为 OPUS-MT zh-en（CC BY 4.0）。

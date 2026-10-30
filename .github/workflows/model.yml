@@ -1,0 +1,68 @@
+# 把 OPUS-MT zh-en 转成 CTranslate2 int8，发布到 Release，安装脚本直接下载（约 80MB），
+# 用户电脑上不用再临时装 1GB 的 PyTorch 来转换。
+# 顺带用真模型跑一遍 tools/test_cases_mt.txt，日志里能看到原始译文、把握分和输入法最终显示的英文。
+name: 翻译模型
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/model.yml
+      - tools/convert_model.sh
+      - mac/mt/server.py
+      - mac/lua/cn2en.lua
+      - tools/test_cases_mt.txt
+permissions:
+  contents: write
+env:
+  MODEL_TAG: model-v1
+  ASSET: opus-mt-zh-en-ct2-int8.tar.gz
+  # 转换只需要 CPU 版 PyTorch，体积小得多
+  PIP_EXTRA_INDEX_URL: https://download.pytorch.org/whl/cpu
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载并转换模型
+        run: ./tools/convert_model.sh "$RUNNER_TEMP/model"
+
+      - name: 打包
+        run: |
+          tar -C "$RUNNER_TEMP" -czf "$ASSET" model
+          sha256sum "$ASSET" | awk '{print $1}' > "$ASSET.sha256"
+          ls -la "$ASSET"; cat "$ASSET.sha256"
+
+      - name: 启动翻译服务
+        run: |
+          mkdir -p "$RUNNER_TEMP/mt"
+          cp mac/mt/server.py "$RUNNER_TEMP/mt/"
+          ln -s "$RUNNER_TEMP/model" "$RUNNER_TEMP/mt/model"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q ctranslate2 sentencepiece
+          nohup "$RUNNER_TEMP/venv/bin/python" "$RUNNER_TEMP/mt/server.py" > "$RUNNER_TEMP/server.log" 2>&1 &
+          for i in $(seq 60); do curl -sf "http://127.0.0.1:18085/t?q=%E4%BD%A0%E5%A5%BD" && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/server.log"; exit 1
+
+      - name: 真模型抽查
+        run: |
+          sudo apt-get install -y -q lua5.4 > /dev/null
+          echo "===== 原始译文<TAB>把握分 ====="
+          grep -v '^#' tools/test_cases_mt.txt | grep . | while read -r zh; do
+            q=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$zh")
+            printf '%s\t%s\n' "$zh" "$(curl -s "http://127.0.0.1:18085/t?s=1&q=$q")"
+          done
+          echo "===== 输入法最终显示 ====="
+          lua5.4 tools/test_cn2en.lua tools/test_cases_mt.txt
+
+      - name: 发布到 Release（已存在则跳过）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$MODEL_TAG" > /dev/null 2>&1; then
+            echo "Release $MODEL_TAG 已存在，不重复发布"
+          else
+            gh release create "$MODEL_TAG" "$ASSET" "$ASSET.sha256" --target "$GITHUB_SHA" \
+              --title "翻译模型（安装脚本自动下载）" \
+              --notes "OPUS-MT zh-en（Helsinki-NLP，CC BY 4.0）转换为 CTranslate2 int8，供 install.sh / cn2en install 下载。模型来源：https://huggingface.co/Helsinki-NLP/opus-mt-zh-en"
+          fi
